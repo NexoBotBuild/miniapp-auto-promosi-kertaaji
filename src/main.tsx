@@ -32,7 +32,7 @@ function BuyerApp() {
   useEffect(() => { void load(); }, []);
   const change = async (feature: "BROADCAST" | "COMMENT", active: boolean) => { setBusy(feature); setError(""); try { await api("/api/buyer/toggle", { method: "POST", headers: buyerHeaders, body: JSON.stringify({ feature, active }) }); await load(); } catch (e) { setError((e as Error).message); } finally { setBusy(""); } };
   const connect = async () => { setBusy("CONNECT"); try { await api("/api/buyer/connect-comment-account", { method: "POST", headers: buyerHeaders }); await load(); } catch (e) { setError((e as Error).message); } finally { setBusy(""); } };
-  if (!data) return <main className="shell loading">Memuat layanan…</main>;
+  if (!data) return <main className="shell loading">{error ? <div className="notice error">{error}</div> : "Memuat layanan…"}</main>;
   const { buyer, worker, broadcast, comment } = data;
   return <main className="shell">
     <header><div className="eyebrow">PUSAT PROMOSI</div><h1>Halo, {buyer.name}.</h1><p>Layanan lo sudah disiapkan. Tinggal pantau dan nyalakan saat diperlukan.</p></header>

@@ -16,7 +16,7 @@ MVP operasional Telegram: Auto Sebar memakai akun worker milik admin secara 1:1 
 2. `npm install`
 3. `npm run dev`
 
-Mode lokal memakai data di folder data. Untuk mencoba dashboard demo di browser, isi ALLOW_DEMO=true.
+Mode lokal memakai data di folder data. Untuk mencoba dashboard demo—termasuk saat dibuka lewat ngrok—isi ALLOW_DEMO=true. Mode ini hanya untuk testing lokal, jangan pernah dinyalakan di production.
 
 ## Menyambungkan ke Telegram
 

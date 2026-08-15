@@ -42,6 +42,11 @@ function telegramUserId(req: any): string | null {
   try { return String(JSON.parse(data.get("user") ?? "{}").id || "") || null; } catch { return null; }
 }
 function buyerId(req: any) { return telegramUserId(req); }
+function buyerForRequest(store: Store, req: any) {
+  const requester = buyerId(req);
+  return store.buyers.find((item) => item.telegramId === requester)
+    ?? (process.env.ALLOW_DEMO === "true" ? store.buyers.find((item) => item.id === "buyer-demo") : undefined);
+}
 function cleanGroups(value: unknown): string[] {
   const raw = Array.isArray(value) ? value : [];
   const groups = raw.map((item) => String(item).trim().replace(/^@/, "")).filter((item) => /^[A-Za-z][A-Za-z0-9_]{3,}$/.test(item));
@@ -60,8 +65,8 @@ function cleanup(store: Store) {
 }
 
 app.get("/api/buyer/dashboard", async (req, reply) => {
-  const store = await load(); const requester = buyerId(req); const buyer = store.buyers.find((item) => item.telegramId === requester);
-  if (!buyer) return reply.code(404).send({ error: "buyer_not_found" });
+  const store = await load(); const buyer = buyerForRequest(store, req);
+  if (!buyer) return reply.code(404).send({ error: "buyer_not_found", reason: "Layanan belum disiapkan untuk akun Telegram ini." });
   cleanup(store); await save(store);
   return {
     buyer,
@@ -73,8 +78,8 @@ app.get("/api/buyer/dashboard", async (req, reply) => {
 });
 
 app.post<{ Body: { feature: "BROADCAST" | "COMMENT"; active: boolean } }>("/api/buyer/toggle", async (req, reply) => {
-  const store = await load(); const requester = buyerId(req); const buyer = store.buyers.find((item) => item.telegramId === requester);
-  if (!buyer) return reply.code(404).send({ error: "buyer_not_found" });
+  const store = await load(); const buyer = buyerForRequest(store, req);
+  if (!buyer) return reply.code(404).send({ error: "buyer_not_found", reason: "Layanan belum disiapkan untuk akun Telegram ini." });
   const feature = req.body.feature;
   if (feature === "BROADCAST") {
     const ready = buyer.planBroadcast && buyer.workerId && store.broadcasts.some((item) => item.buyerId === buyer.id);
@@ -90,8 +95,8 @@ app.post<{ Body: { feature: "BROADCAST" | "COMMENT"; active: boolean } }>("/api/
 
 app.post("/api/buyer/connect-comment-account", async (req, reply) => {
   // Placeholder integrasi MTProto: UI/bot login harus dipasang saat API Telegram client tersedia.
-  const store = await load(); const requester = buyerId(req); const buyer = store.buyers.find((item) => item.telegramId === requester);
-  if (!buyer) return reply.code(404).send({ error: "buyer_not_found" });
+  const store = await load(); const buyer = buyerForRequest(store, req);
+  if (!buyer) return reply.code(404).send({ error: "buyer_not_found", reason: "Layanan belum disiapkan untuk akun Telegram ini." });
   buyer.commentAccountConnected = true; buyer.updatedAt = now(); await save(store);
   return { ok: true, next: "Akun berhasil tersambung." };
 });
