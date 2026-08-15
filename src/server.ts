@@ -14,9 +14,9 @@ type CommentConfig = { buyerId: string; bases: string[]; division: string; keywo
 type Activity = { buyerId: string; kind: "BROADCAST" | "COMMENT"; status: string; label: string; link?: string; at: string };
 type Candidate = { id: string; buyerId: string; base: string; messageId: string; link: string; createdAt: string };
 type Plan = "BROADCAST" | "COMMENT";
-type Package = { plan: Plan; name: string; price: number; durationDays: number; enabled: boolean; updatedAt: string };
-type Payment = { id: string; telegramId: string; plan: Plan; amount: number; durationDays: number; status: "PENDING" | "PAID" | "FAILED" | "EXPIRED"; gatewayReference?: string; createdAt: string; paidAt?: string };
-type Subscription = { id: string; buyerId: string; plan: Plan; status: "ACTIVE" | "EXPIRED"; startsAt: string; endsAt: string };
+type Package = { id: string; service: Plan; name: string; price: number; durationDays: number; maxGroups: number; enabled: boolean; updatedAt: string };
+type Payment = { id: string; telegramId: string; packageId: string; plan: Plan; amount: number; durationDays: number; maxGroups: number; status: "PENDING" | "PAID" | "FAILED" | "EXPIRED"; gatewayReference?: string; createdAt: string; paidAt?: string };
+type Subscription = { id: string; buyerId: string; packageId: string; plan: Plan; maxGroups: number; status: "ACTIVE" | "EXPIRED"; startsAt: string; endsAt: string };
 type Store = { buyers: Buyer[]; workers: Worker[]; broadcasts: Broadcast[]; commentConfigs: CommentConfig[]; activities: Activity[]; approvalCandidates: Candidate[]; dedupe: { buyerId: string; base: string; messageId: string; at: string }[]; payments: Payment[]; subscriptions: Subscription[]; packages: Package[] };
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -27,8 +27,8 @@ let bot: Bot | undefined;
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 
-const defaultPackages = (): Package[] => [{ plan: "BROADCAST", name: "Auto Sebar", price: 0, durationDays: 30, enabled: false, updatedAt: now() }, { plan: "COMMENT", name: "Auto Komen MF", price: 0, durationDays: 30, enabled: false, updatedAt: now() }];
-async function load(): Promise<Store> { const store = JSON.parse(await readFile(dataFile, "utf8")) as Partial<Store>; const ready = { ...store, payments: store.payments ?? [], subscriptions: store.subscriptions ?? [], packages: store.packages ?? defaultPackages() } as Store; for (const worker of ready.workers) if (worker.status === "COOLDOWN") { worker.status = "AVAILABLE"; worker.buyerId = null; delete worker.cooldownUntil; } return ready; }
+const defaultPackages = (): Package[] => [];
+async function load(): Promise<Store> { const store = JSON.parse(await readFile(dataFile, "utf8")) as Partial<Store>; const ready = { ...store, payments: store.payments ?? [], subscriptions: store.subscriptions ?? [], packages: store.packages ?? defaultPackages() } as Store; ready.packages = ready.packages.map((item: any) => ({ id: item.id ?? id("package"), service: item.service ?? item.plan, name: item.name, price: item.price, durationDays: item.durationDays, maxGroups: Math.min(15, Math.max(1, Number(item.maxGroups) || 15)), enabled: item.enabled, updatedAt: item.updatedAt ?? now() })); for (const worker of ready.workers) if (worker.status === "COOLDOWN") { worker.status = "AVAILABLE"; worker.buyerId = null; delete worker.cooldownUntil; } return ready; }
 async function save(store: Store) { await writeFile(dataFile, JSON.stringify(store, null, 2) + "\n"); }
 function telegramUserId(req: any): string | null {
   const initData = String(req.headers["x-telegram-init-data"] ?? "");
@@ -56,10 +56,10 @@ function buyerForRequest(store: Store, req: any) {
   return store.buyers.find((item) => item.telegramId === requester)
     ?? (process.env.ALLOW_DEMO === "true" ? store.buyers.find((item) => item.id === "buyer-demo") : undefined);
 }
-function cleanGroups(value: unknown): string[] {
+function cleanGroups(value: unknown, maxGroups = 15): string[] {
   const raw = Array.isArray(value) ? value : [];
   const groups = raw.map((item) => String(item).trim().replace(/^@/, "")).filter((item) => /^[A-Za-z][A-Za-z0-9_]{3,}$/.test(item));
-  if (!groups.length || groups.length > 15 || new Set(groups.map((item) => item.toLowerCase())).size !== groups.length) throw new Error("Masukkan 1–15 grup publik unik ber-username.");
+  if (!groups.length || groups.length > maxGroups || new Set(groups.map((item) => item.toLowerCase())).size !== groups.length) throw new Error(`Masukkan 1–${maxGroups} grup publik unik ber-username.`);
   return groups;
 }
 function split(value: unknown): string[] { return String(value ?? "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean).slice(0, 60); }
@@ -67,6 +67,12 @@ function split(value: unknown): string[] { return String(value ?? "").split(/[\n
 function hasPlanAccess(store: Store, buyer: Buyer, plan: Plan) {
   const subscriptions = store.subscriptions.filter((item) => item.buyerId === buyer.id && item.plan === plan);
   return subscriptions.length ? subscriptions.some((item) => item.status === "ACTIVE" && Date.parse(item.endsAt) > Date.now()) : plan === "BROADCAST" ? buyer.planBroadcast : buyer.planComment;
+}
+function maxGroupsForBuyer(store: Store, buyer: Buyer) {
+  const active = store.subscriptions
+    .filter((item) => item.buyerId === buyer.id && item.plan === "BROADCAST" && item.status === "ACTIVE" && Date.parse(item.endsAt) > Date.now())
+    .sort((a, b) => Date.parse(b.endsAt) - Date.parse(a.endsAt))[0];
+  return Math.min(15, Math.max(1, Number(active?.maxGroups) || 15));
 }
 function releaseWorker(store: Store, buyer: Buyer) {
   if (!buyer.workerId) return;
@@ -101,7 +107,7 @@ app.get("/api/buyer/dashboard", async (req, reply) => {
   return {
     buyer,
     worker: buyer.workerId ? store.workers.find((item) => item.id === buyer.workerId) ?? null : null,
-    broadcast: store.broadcasts.find((item) => item.buyerId === buyer.id) ?? null,
+    broadcast: (() => { const item = store.broadcasts.find((entry) => entry.buyerId === buyer.id); return item ? { ...item, maxGroups: maxGroupsForBuyer(store, buyer) } : null; })(),
     comment: store.commentConfigs.find((item) => item.buyerId === buyer.id) ?? null,
     activity: store.activities.filter((item) => item.buyerId === buyer.id).sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 12),
   };
@@ -113,12 +119,11 @@ app.get("/api/app/session", async (req, reply) => {
 });
 
 app.get("/api/public/packages", async () => {
-  const store = await load(); return store.packages.filter((item) => item.enabled).map(({ plan, name, price, durationDays }) => ({ plan, name, price, durationDays }));
+  const store = await load(); return store.packages.filter((item) => item.enabled).map(({ id: packageId, service, name, price, durationDays, maxGroups }) => ({ packageId, service, name, price, durationDays, maxGroups }));
 });
-app.post<{ Body: { plan?: Plan } }>("/api/public/checkout", async (req, reply) => {
-  const plan = req.body?.plan === "COMMENT" ? "COMMENT" : req.body?.plan === "BROADCAST" ? "BROADCAST" : null;
-  const telegramId = telegramUserId(req); const store = await load(); const selectedPackage = plan ? store.packages.find((item) => item.plan === plan && item.enabled) : undefined;
-  if (!plan || !telegramId) return reply.code(401).send({ error: "open_from_telegram", reason: "Buka layanan ini dari bot Telegram untuk berlangganan." });
+app.post<{ Body: { packageId?: string } }>("/api/public/checkout", async (req, reply) => {
+  const telegramId = telegramUserId(req); const store = await load(); const selectedPackage = store.packages.find((item) => item.id === String(req.body?.packageId ?? "") && item.enabled);
+  if (!telegramId) return reply.code(401).send({ error: "open_from_telegram", reason: "Buka layanan ini dari bot Telegram untuk berlangganan." });
   if (!selectedPackage || selectedPackage.price < 1) return reply.code(409).send({ error: "package_unavailable", reason: "Paket ini belum dibuka untuk pembayaran." });
   if (!process.env.DOKU_CLIENT_ID || !process.env.DOKU_SECRET_KEY) return reply.code(503).send({ error: "payment_unavailable", reason: "Pembayaran belum diaktifkan." });
   return reply.code(503).send({ error: "checkout_preparing", reason: "Pembayaran untuk paket ini sedang disiapkan." });
@@ -186,18 +191,25 @@ app.get("/api/admin/overview", { preHandler: adminOnly }, async () => {
   return { buyers: store.buyers, workers: store.workers, broadcasts: store.broadcasts, comments: store.commentConfigs, subscriptions: store.subscriptions, packages: store.packages };
 });
 
-app.put<{ Body: { packages?: { plan?: Plan; price?: number; durationDays?: number; enabled?: boolean }[] } }>("/api/admin/packages", { preHandler: adminOnly }, async (req, reply) => {
-  const incoming = req.body?.packages;
-  if (!Array.isArray(incoming) || incoming.length !== 2) return reply.code(400).send({ error: "Lengkapi dua paket langganan." });
-  const store = await load(); const next: Package[] = [];
-  for (const plan of ["BROADCAST", "COMMENT"] as Plan[]) {
-    const current = incoming.find((item) => item.plan === plan);
-    const existing = store.packages.find((item) => item.plan === plan);
-    const price = Math.max(0, Math.floor(Number(current?.price) || 0)); const durationDays = Math.max(1, Math.min(365, Math.floor(Number(current?.durationDays) || 30)));
-    if (!current || price > 10_000_000) return reply.code(400).send({ error: "Harga paket tidak valid." });
-    next.push({ plan, name: existing?.name ?? (plan === "BROADCAST" ? "Auto Sebar" : "Auto Komen MF"), price, durationDays, enabled: Boolean(current.enabled), updatedAt: now() });
-  }
-  store.packages = next; await save(store); return { packages: store.packages };
+function validatePackage(input: { service?: Plan; name?: string; price?: number; durationDays?: number; maxGroups?: number; enabled?: boolean }): Omit<Package, "id" | "updatedAt"> {
+  const service: Plan | null = input.service === "BROADCAST" ? "BROADCAST" : input.service === "COMMENT" ? "COMMENT" : null;
+  const name = String(input.name ?? "").trim().slice(0, 40); const price = Math.max(0, Math.floor(Number(input.price) || 0)); const durationDays = Math.max(1, Math.min(365, Math.floor(Number(input.durationDays) || 30))); const maxGroups = Math.max(1, Math.min(15, Math.floor(Number(input.maxGroups) || 15)));
+  if (!service || name.length < 2 || price > 10_000_000) throw new Error("Isi nama, harga, dan masa aktif paket dengan benar.");
+  if (input.enabled && price < 1) throw new Error("Isi harga sebelum membuka paket untuk buyer.");
+  return { service, name, price, durationDays, maxGroups, enabled: Boolean(input.enabled) };
+}
+app.post<{ Body: { service?: Plan; name?: string; price?: number; durationDays?: number; maxGroups?: number; enabled?: boolean } }>("/api/admin/packages", { preHandler: adminOnly }, async (req, reply) => {
+  try { const value = validatePackage(req.body); const store = await load(); const item: Package = { id: id("package"), ...value, updatedAt: now() }; store.packages.push(item); await save(store); return { package: item }; }
+  catch (error) { return reply.code(400).send({ error: (error as Error).message }); }
+});
+app.put<{ Params: { id: string }; Body: { service?: Plan; name?: string; price?: number; durationDays?: number; maxGroups?: number; enabled?: boolean } }>("/api/admin/packages/:id", { preHandler: adminOnly }, async (req, reply) => {
+  try { const value = validatePackage(req.body); const store = await load(); const item = store.packages.find((entry) => entry.id === req.params.id); if (!item) return reply.code(404).send({ error: "Paket tidak ditemukan." }); Object.assign(item, value, { updatedAt: now() }); await save(store); return { package: item }; }
+  catch (error) { return reply.code(400).send({ error: (error as Error).message }); }
+});
+app.delete<{ Params: { id: string } }>("/api/admin/packages/:id", { preHandler: adminOnly }, async (req, reply) => {
+  const store = await load(); const item = store.packages.find((entry) => entry.id === req.params.id); if (!item) return reply.code(404).send({ error: "Paket tidak ditemukan." });
+  if (store.payments.some((payment) => payment.packageId === item.id)) return reply.code(409).send({ error: "Paket yang sudah memiliki transaksi tidak bisa dihapus." });
+  store.packages = store.packages.filter((entry) => entry.id !== item.id); await save(store); return { ok: true };
 });
 
 app.post<{ Body: { name?: string; telegramId?: string } }>("/api/admin/buyers", { preHandler: adminOnly }, async (req, reply) => {
@@ -230,7 +242,7 @@ app.post<{ Params: { id: string }; Body: { planBroadcast?: boolean; planComment?
     const worker = store.workers.find((item) => item.id === req.body.workerId);
     if (!worker || (worker.status !== "AVAILABLE" && worker.buyerId !== buyer.id)) return reply.code(409).send({ error: "Pilih worker yang tersedia untuk buyer ini." });
     if (!String(req.body.wording ?? "").trim()) return reply.code(400).send({ error: "Wording Auto Sebar wajib diisi." });
-    let groups: string[]; try { groups = cleanGroups(req.body.groups); } catch (error) { return reply.code(400).send({ error: (error as Error).message }); }
+    let groups: string[]; try { groups = cleanGroups(req.body.groups, maxGroupsForBuyer(store, buyer)); } catch (error) { return reply.code(400).send({ error: (error as Error).message }); }
     for (const item of store.workers) if (item.buyerId === buyer.id && item.id !== worker.id) { item.buyerId = null; item.status = "AVAILABLE"; }
     worker.buyerId = buyer.id; worker.status = "ASSIGNED"; delete worker.cooldownUntil; buyer.workerId = worker.id;
     const broadcast: Broadcast = { buyerId: buyer.id, wording: String(req.body.wording).trim().slice(0, 4000), groups, intervalMinutes: Math.min(120, Math.max(5, Number(req.body.intervalMinutes) || 15)), updatedBy: "ADMIN", updatedAt: now() };
