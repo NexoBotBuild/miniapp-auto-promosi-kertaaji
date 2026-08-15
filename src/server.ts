@@ -26,7 +26,7 @@ let bot: Bot | undefined;
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 
-async function load(): Promise<Store> { const store = JSON.parse(await readFile(dataFile, "utf8")) as Partial<Store>; return { ...store, payments: store.payments ?? [], subscriptions: store.subscriptions ?? [] } as Store; }
+async function load(): Promise<Store> { const store = JSON.parse(await readFile(dataFile, "utf8")) as Partial<Store>; const ready = { ...store, payments: store.payments ?? [], subscriptions: store.subscriptions ?? [] } as Store; for (const worker of ready.workers) if (worker.status === "COOLDOWN") { worker.status = "AVAILABLE"; worker.buyerId = null; delete worker.cooldownUntil; } return ready; }
 async function save(store: Store) { await writeFile(dataFile, JSON.stringify(store, null, 2) + "\n"); }
 function telegramUserId(req: any): string | null {
   const initData = String(req.headers["x-telegram-init-data"] ?? "");
@@ -70,15 +70,13 @@ function releaseWorker(store: Store, buyer: Buyer) {
   if (!buyer.workerId) return;
   const worker = store.workers.find((item) => item.id === buyer.workerId);
   if (worker) {
-    worker.buyerId = null; worker.status = "COOLDOWN";
-    worker.cooldownUntil = new Date(Date.now() + Math.max(0, Number(process.env.WORKER_COOLDOWN_DAYS ?? 3)) * 86_400_000).toISOString();
+    worker.buyerId = null; worker.status = "AVAILABLE"; delete worker.cooldownUntil;
   }
   buyer.workerId = null;
 }
 function cleanup(store: Store) {
   const ago = (days: number) => Date.now() - days * 86_400_000;
   for (const subscription of store.subscriptions) if (subscription.status === "ACTIVE" && Date.parse(subscription.endsAt) <= Date.now()) subscription.status = "EXPIRED";
-  for (const worker of store.workers) if (worker.status === "COOLDOWN" && worker.cooldownUntil && Date.parse(worker.cooldownUntil) <= Date.now()) { worker.status = "AVAILABLE"; delete worker.cooldownUntil; }
   for (const buyer of store.buyers) {
     const ownsSubscription = store.subscriptions.some((item) => item.buyerId === buyer.id);
     if (!ownsSubscription) continue;
