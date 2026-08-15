@@ -6,11 +6,25 @@ import "./styles.css";
 type Worker = { id: string; label: string; username: string; status: string; buyerId: string | null };
 type Buyer = { id: string; name: string; planBroadcast: boolean; planComment: boolean; broadcastActive: boolean; commentActive: boolean; commentAccountConnected: boolean; workerId: string | null };
 type Dashboard = { buyer: Buyer; worker: Worker | null; broadcast: { wording: string; groups: string[]; intervalMinutes: number } | null; comment: { bases: string[]; division: string; keywords: string[]; blacklist: string[]; wording: string; mode: "APPROVAL" | "AUTO" } | null; activity: { kind: string; status: string; label: string; at: string }[] };
-const buyerHeaders = { "x-buyer-id": "buyer-demo", "content-type": "application/json" };
+declare global { interface Window { Telegram?: { WebApp?: { initData: string; ready: () => void; expand: () => void } } } }
+const telegramApp = window.Telegram?.WebApp;
+telegramApp?.ready(); telegramApp?.expand();
+const buyerHeaders = { ...(telegramApp?.initData ? { "x-telegram-init-data": telegramApp.initData } : { "x-buyer-id": "0" }), "content-type": "application/json" };
 const api = async <T,>(url: string, options?: RequestInit): Promise<T> => { const res = await fetch(url, options); const data = await res.json(); if (!res.ok) throw new Error(data.reason ?? data.error); return data; };
 
 function Toggle({ on, disabled, onClick }: { on: boolean; disabled?: boolean; onClick: () => void }) { return <button className={`toggle ${on ? "on" : ""}`} disabled={disabled} onClick={onClick}><i /></button>; }
 function Tag({ children, kind = "soft" }: { children: ReactNode; kind?: string }) { return <span className={`tag ${kind}`}>{children}</span>; }
+
+type ProductIconName = "broadcast" | "comment";
+
+function ProductIcon({ name }: { name: ProductIconName }) {
+  const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+  return name === "broadcast"
+    ? <svg viewBox="0 0 24 24" aria-hidden="true"><path {...common} d="m5 10.2 11.6-5.1v13.8L5 13.8v-3.6Z" /><path {...common} d="M8.3 15.2 9.6 19h3.1l-.8-4.9M19 8.2c1 .8 1.5 1.9 1.5 3.1s-.5 2.3-1.5 3.1" /></svg>
+    : <svg viewBox="0 0 24 24" aria-hidden="true"><path {...common} d="M4.5 6.7c0-1.2 1-2.2 2.2-2.2h10.6c1.2 0 2.2 1 2.2 2.2v6.6c0 1.2-1 2.2-2.2 2.2h-6.4L7 19v-3.5H6.7c-1.2 0-2.2-1-2.2-2.2V6.7Z" /><path {...common} d="M8 10h.01M12 10h.01M16 10h.01" strokeWidth="2.5" /></svg>;
+}
+
+function activityLabel(kind: string) { return kind === "broadcast" ? "Sebar" : "Komen"; }
 
 function BuyerApp() {
   const [data, setData] = useState<Dashboard | null>(null); const [error, setError] = useState(""); const [busy, setBusy] = useState("");
@@ -21,12 +35,12 @@ function BuyerApp() {
   if (!data) return <main className="shell loading">Memuat layanan…</main>;
   const { buyer, worker, broadcast, comment } = data;
   return <main className="shell">
-    <header><div className="eyebrow">PROMOTION DESK</div><h1>Halo, {buyer.name}.</h1><p>Layanan lo sudah disiapkan. Tinggal pantau dan nyalakan saat diperlukan.</p></header>
+    <header><div className="eyebrow">PUSAT PROMOSI</div><h1>Halo, {buyer.name}.</h1><p>Layanan lo sudah disiapkan. Tinggal pantau dan nyalakan saat diperlukan.</p></header>
     {error && <div className="notice error">{error}</div>}
-    <section className="service-card broadcast-card"><div className="service-top"><div><span className="glyph">↗</span><div><div className="label">AUTO SEBAR</div><h2>{buyer.planBroadcast ? "Siap untuk promosi" : "Belum ada akses"}</h2></div></div><Toggle on={buyer.broadcastActive} disabled={busy === "BROADCAST" || !buyer.planBroadcast} onClick={() => void change("BROADCAST", !buyer.broadcastActive)} /></div>
+    <section className="service-card broadcast-card"><div className="service-top"><div><span className="icon-tile broadcast-icon"><ProductIcon name="broadcast" /></span><div><div className="label">AUTO SEBAR</div><h2>{buyer.planBroadcast ? "Siap untuk promosi" : "Belum ada akses"}</h2></div></div><Toggle on={buyer.broadcastActive} disabled={busy === "BROADCAST" || !buyer.planBroadcast} onClick={() => void change("BROADCAST", !buyer.broadcastActive)} /></div>
       {buyer.planBroadcast && broadcast ? <><div className="signal"><b>{buyer.broadcastActive ? "Sedang berjalan" : "Dijeda"}</b><span>{worker ? `@${worker.username}` : "Akun kerja belum dipilih"} · {broadcast.groups.length}/15 grup · jeda {broadcast.intervalMinutes}m</span></div><div className="excerpt">{broadcast.wording}</div><div className="group-pills">{broadcast.groups.slice(0, 4).map((group) => <Tag key={group}>@{group}</Tag>)}{broadcast.groups.length > 4 && <Tag>+{broadcast.groups.length - 4}</Tag>}</div></> : <p className="card-copy">Admin akan menyiapkan akun kerja, wording, dan grup tujuan lo.</p>}
     </section>
-    <section className="service-card comment-card"><div className="service-top"><div><span className="glyph">◎</span><div><div className="label">AUTO KOMEN MF</div><h2>{buyer.planComment ? "Pencarian buyer" : "Belum ada akses"}</h2></div></div><Toggle on={buyer.commentActive} disabled={busy === "COMMENT" || !buyer.planComment} onClick={() => void change("COMMENT", !buyer.commentActive)} /></div>
+    <section className="service-card comment-card"><div className="service-top"><div><span className="icon-tile comment-icon"><ProductIcon name="comment" /></span><div><div className="label">AUTO KOMEN MF</div><h2>{buyer.planComment ? "Pencarian buyer" : "Belum ada akses"}</h2></div></div><Toggle on={buyer.commentActive} disabled={busy === "COMMENT" || !buyer.planComment} onClick={() => void change("COMMENT", !buyer.commentActive)} /></div>
       {buyer.planComment && <>{!buyer.commentAccountConnected ? <button className="outline" disabled={busy === "CONNECT"} onClick={() => void connect()}>{busy === "CONNECT" ? "Menyambungkan…" : "Hubungkan akun Telegram"}</button> : <div className="signal"><b>{buyer.commentActive ? "Sedang memantau" : "Dijeda"}</b><span>{comment ? `${comment.division} · ${comment.mode === "AUTO" ? "Otomatis" : "By approval"}` : "Admin sedang melengkapi setup"}</span></div>}{comment && <div className="compact-grid"><div><span>BASE</span><b>{comment.bases.length} tujuan</b></div><div><span>KEYWORD</span><b>{comment.keywords.length} aktif</b></div><div><span>MODE</span><b>{comment.mode === "AUTO" ? "Otomatis" : "Approval"}</b></div></div>}</>}
     </section>
     <section className="activity"><div className="section-title"><span>AKTIVITAS TERBARU</span><b>30 hari</b></div>{data.activity.length ? data.activity.map((item, index) => <div className="activity-row" key={index}><i className={item.kind.toLowerCase()} /><div><b>{item.label}</b><span>{item.kind} · {new Date(item.at).toLocaleString("id-ID")}</span></div><Tag>{item.status}</Tag></div>) : <div className="empty">Belum ada aktivitas. Admin akan menyelesaikan setup dulu.</div>}</section>

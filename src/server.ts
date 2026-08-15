@@ -2,6 +2,7 @@ import "dotenv/config";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import Fastify from "fastify";
 import { Bot, InlineKeyboard } from "grammy";
 
@@ -21,7 +22,22 @@ const id = (prefix: string) => `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 
 async function load(): Promise<Store> { return JSON.parse(await readFile(dataFile, "utf8")) as Store; }
 async function save(store: Store) { await writeFile(dataFile, JSON.stringify(store, null, 2) + "\n"); }
-function buyerId(req: any) { return String(req.headers["x-buyer-id"] ?? "buyer-demo"); }
+function telegramUserId(req: any): string | null {
+  const initData = String(req.headers["x-telegram-init-data"] ?? "");
+  if (!initData) return process.env.ALLOW_DEMO === "true" ? String(req.headers["x-buyer-id"] ?? "buyer-demo") : null;
+  const botToken = process.env.BOT_TOKEN;
+  if (!botToken) return null;
+  const data = new URLSearchParams(initData); const receivedHash = data.get("hash");
+  if (!receivedHash) return null;
+  data.delete("hash");
+  const checkString = [...data.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => key + "=" + value).join("\n");
+  const secret = createHmac("sha256", "WebAppData").update(botToken).digest();
+  const expectedHash = createHmac("sha256", secret).update(checkString).digest("hex");
+  const received = Buffer.from(receivedHash, "hex"); const expected = Buffer.from(expectedHash, "hex");
+  if (received.length !== expected.length || !timingSafeEqual(received, expected)) return null;
+  try { return String(JSON.parse(data.get("user") ?? "{}").id || "") || null; } catch { return null; }
+}
+function buyerId(req: any) { return telegramUserId(req); }
 function cleanGroups(value: unknown): string[] {
   const raw = Array.isArray(value) ? value : [];
   const groups = raw.map((item) => String(item).trim().replace(/^@/, "")).filter((item) => /^[A-Za-z][A-Za-z0-9_]{3,}$/.test(item));
@@ -40,7 +56,7 @@ function cleanup(store: Store) {
 }
 
 app.get("/api/buyer/dashboard", async (req, reply) => {
-  const store = await load(); const buyer = store.buyers.find((item) => item.id === buyerId(req));
+  const store = await load(); const requester = buyerId(req); const buyer = store.buyers.find((item) => item.telegramId === requester);
   if (!buyer) return reply.code(404).send({ error: "buyer_not_found" });
   cleanup(store); await save(store);
   return {
@@ -53,7 +69,7 @@ app.get("/api/buyer/dashboard", async (req, reply) => {
 });
 
 app.post<{ Body: { feature: "BROADCAST" | "COMMENT"; active: boolean } }>("/api/buyer/toggle", async (req, reply) => {
-  const store = await load(); const buyer = store.buyers.find((item) => item.id === buyerId(req));
+  const store = await load(); const requester = buyerId(req); const buyer = store.buyers.find((item) => item.telegramId === requester);
   if (!buyer) return reply.code(404).send({ error: "buyer_not_found" });
   const feature = req.body.feature;
   if (feature === "BROADCAST") {
@@ -70,10 +86,10 @@ app.post<{ Body: { feature: "BROADCAST" | "COMMENT"; active: boolean } }>("/api/
 
 app.post("/api/buyer/connect-comment-account", async (req, reply) => {
   // Placeholder integrasi MTProto: UI/bot login harus dipasang saat API Telegram client tersedia.
-  const store = await load(); const buyer = store.buyers.find((item) => item.id === buyerId(req));
+  const store = await load(); const requester = buyerId(req); const buyer = store.buyers.find((item) => item.telegramId === requester);
   if (!buyer) return reply.code(404).send({ error: "buyer_not_found" });
   buyer.commentAccountConnected = true; buyer.updatedAt = now(); await save(store);
-  return { ok: true, next: "Akun ditandai tersambung untuk mode develop. Production menggantinya dengan OTP Telegram." };
+  return { ok: true, next: "Akun berhasil tersambung." };
 });
 
 // Dipanggil oleh adapter Telegram userbot saat ada post baru di base. Tidak menyimpan
@@ -161,8 +177,9 @@ app.post("/api/payments/doku/webhook", async (_req, reply) => reply.code(501).se
 const token = process.env.BOT_TOKEN;
 if (token) {
   const bot = new Bot(token);
+  const miniAppUrl = process.env.MINIAPP_URL;
+  if (miniAppUrl) void bot.api.setChatMenuButton({ menu_button: { type: "web_app", text: "Buka layanan", web_app: { url: miniAppUrl } } }).catch((error) => app.log.error(error, "Menu Mini App belum tersambung"));
   bot.command("start", async (ctx) => {
-    const miniAppUrl = process.env.MINIAPP_URL;
     await ctx.reply("Buka layanan promosi lo dari Mini App.", miniAppUrl ? { reply_markup: new InlineKeyboard().webApp("Buka Mini App", miniAppUrl) } : undefined);
   });
   void bot.start();

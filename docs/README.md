@@ -16,4 +16,13 @@ MVP operasional Telegram: Auto Sebar memakai akun worker milik admin secara 1:1 
 2. `npm install`
 3. `npm run dev`
 
-Mode develop memakai data lokal `data/store.json`. Sebelum deploy production, ganti adapter store ke Postgres dan aktifkan verifikasi Telegram initData.
+Mode lokal memakai data di folder data. Untuk mencoba dashboard demo di browser, isi ALLOW_DEMO=true.
+
+## Menyambungkan ke Telegram
+
+1. Deploy aplikasi ini ke domain HTTPS, lalu isi MINIAPP_URL dengan alamat tersebut dan BOT_TOKEN dengan token bot client.
+2. Deploy ulang. Saat bot hidup, ia memasang tombol menu **Buka layanan** dan tombol /start ke Mini App secara otomatis.
+3. Buyer membuka bot lalu menekan tombol itu. Mini App membaca identitas Telegram dari sesi yang dibuka dan server memverifikasinya dengan BOT_TOKEN.
+4. Saat admin membuat buyer, simpan Telegram ID buyer yang tepat. Itu yang mengikat akun Telegram buyer ke layanannya.
+
+Jangan aktifkan ALLOW_DEMO di production. Sebelum menerima data nyata, pindahkan store JSON ke Postgres dan pasang alur login Telegram (OTP) yang sesungguhnya untuk Auto Komen.
