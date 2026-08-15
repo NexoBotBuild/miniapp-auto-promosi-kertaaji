@@ -13,8 +13,10 @@ type Broadcast = { buyerId: string; wording: string; groups: string[]; intervalM
 type CommentConfig = { buyerId: string; bases: string[]; division: string; keywords: string[]; blacklist: string[]; wording: string; mode: "APPROVAL" | "AUTO"; updatedAt: string };
 type Activity = { buyerId: string; kind: "BROADCAST" | "COMMENT"; status: string; label: string; link?: string; at: string };
 type Candidate = { id: string; buyerId: string; base: string; messageId: string; link: string; createdAt: string };
-type AccessRequest = { id: string; telegramId: string; plan: "BROADCAST" | "COMMENT"; createdAt: string };
-type Store = { buyers: Buyer[]; workers: Worker[]; broadcasts: Broadcast[]; commentConfigs: CommentConfig[]; activities: Activity[]; approvalCandidates: Candidate[]; dedupe: { buyerId: string; base: string; messageId: string; at: string }[]; accessRequests: AccessRequest[] };
+type Plan = "BROADCAST" | "COMMENT";
+type Payment = { id: string; telegramId: string; plan: Plan; amount: number; status: "PENDING" | "PAID" | "FAILED" | "EXPIRED"; gatewayReference?: string; createdAt: string; paidAt?: string };
+type Subscription = { id: string; buyerId: string; plan: Plan; status: "ACTIVE" | "EXPIRED"; startsAt: string; endsAt: string };
+type Store = { buyers: Buyer[]; workers: Worker[]; broadcasts: Broadcast[]; commentConfigs: CommentConfig[]; activities: Activity[]; approvalCandidates: Candidate[]; dedupe: { buyerId: string; base: string; messageId: string; at: string }[]; payments: Payment[]; subscriptions: Subscription[] };
 
 const root = dirname(fileURLToPath(import.meta.url));
 const dataFile = join(root, "../data/store.json");
@@ -24,7 +26,7 @@ let bot: Bot | undefined;
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 
-async function load(): Promise<Store> { const store = JSON.parse(await readFile(dataFile, "utf8")) as Partial<Store>; return { ...store, accessRequests: store.accessRequests ?? [] } as Store; }
+async function load(): Promise<Store> { const store = JSON.parse(await readFile(dataFile, "utf8")) as Partial<Store>; return { ...store, payments: store.payments ?? [], subscriptions: store.subscriptions ?? [] } as Store; }
 async function save(store: Store) { await writeFile(dataFile, JSON.stringify(store, null, 2) + "\n"); }
 function telegramUserId(req: any): string | null {
   const initData = String(req.headers["x-telegram-init-data"] ?? "");
@@ -87,16 +89,14 @@ app.get("/api/app/session", async (req, reply) => {
   return { role: isAdmin(req) ? "ADMIN" : "BUYER" };
 });
 
-app.post<{ Body: { plan?: "BROADCAST" | "COMMENT" } }>("/api/public/access-request", async (req, reply) => {
+const planAmount = (plan: Plan) => Number(plan === "BROADCAST" ? process.env.PLAN_BROADCAST_PRICE : process.env.PLAN_COMMENT_PRICE) || 0;
+app.post<{ Body: { plan?: Plan } }>("/api/public/checkout", async (req, reply) => {
   const plan = req.body?.plan === "COMMENT" ? "COMMENT" : req.body?.plan === "BROADCAST" ? "BROADCAST" : null;
-  const telegramId = telegramUserId(req);
-  if (!plan || !telegramId) return reply.code(401).send({ error: "open_from_telegram", reason: "Buka layanan ini dari bot Telegram untuk meminta akses." });
-  const store = await load(); const exists = store.accessRequests.some((item) => item.telegramId === telegramId && item.plan === plan);
-  if (!exists) store.accessRequests.unshift({ id: id("request"), telegramId, plan, createdAt: now() });
-  await save(store);
-  const adminId = process.env.ADMIN_TELEGRAM_ID ?? process.env.ADMIN_TELEGRAM_IDS?.split(",")[0]?.trim();
-  if (bot && adminId) await bot.api.sendMessage(adminId, "Permintaan akses baru\nPaket: " + (plan === "BROADCAST" ? "Auto Sebar" : "Auto Komen MF") + "\nID Telegram: " + telegramId).catch((error) => app.log.error(error, "Notifikasi permintaan akses gagal"));
-  return { ok: true };
+  const telegramId = telegramUserId(req); const amount = plan ? planAmount(plan) : 0;
+  if (!plan || !telegramId) return reply.code(401).send({ error: "open_from_telegram", reason: "Buka layanan ini dari bot Telegram untuk berlangganan." });
+  if (amount < 1) return reply.code(409).send({ error: "package_unavailable", reason: "Paket ini belum dibuka untuk pembayaran." });
+  if (!process.env.DOKU_CLIENT_ID || !process.env.DOKU_SECRET_KEY) return reply.code(503).send({ error: "payment_unavailable", reason: "Pembayaran belum diaktifkan." });
+  return reply.code(503).send({ error: "checkout_preparing", reason: "Pembayaran untuk paket ini sedang disiapkan." });
 });
 
 app.post<{ Body: { feature: "BROADCAST" | "COMMENT"; active: boolean } }>("/api/buyer/toggle", async (req, reply) => {
@@ -156,7 +156,7 @@ app.post<{ Params: { id: string } }>("/api/buyer/approval/:id/send", async (req,
 
 app.get("/api/admin/overview", { preHandler: adminOnly }, async () => {
   const store = await load(); cleanup(store); await save(store);
-  return { buyers: store.buyers, workers: store.workers, broadcasts: store.broadcasts, comments: store.commentConfigs, accessRequests: store.accessRequests };
+  return { buyers: store.buyers, workers: store.workers, broadcasts: store.broadcasts, comments: store.commentConfigs, subscriptions: store.subscriptions };
 });
 
 app.post<{ Body: { name?: string; telegramId?: string } }>("/api/admin/buyers", { preHandler: adminOnly }, async (req, reply) => {
