@@ -8,7 +8,7 @@ import fastifyStatic from "@fastify/static";
 import { Bot, InlineKeyboard } from "grammy";
 
 type Buyer = { id: string; name: string; telegramId: string; broadcastActive: boolean; commentActive: boolean; commentAccountConnected: boolean; planBroadcast: boolean; planComment: boolean; workerId: string | null; updatedAt: string };
-type Worker = { id: string; label: string; username: string; status: "AVAILABLE" | "ASSIGNED" | "DISABLED"; buyerId: string | null; createdAt: string };
+type Worker = { id: string; label: string; username: string; status: "AVAILABLE" | "ASSIGNED" | "COOLDOWN" | "DISABLED"; buyerId: string | null; cooldownUntil?: string; createdAt: string };
 type Broadcast = { buyerId: string; wording: string; groups: string[]; intervalMinutes: number; updatedBy: "ADMIN" | "BUYER"; updatedAt: string };
 type CommentConfig = { buyerId: string; bases: string[]; division: string; keywords: string[]; blacklist: string[]; wording: string; mode: "APPROVAL" | "AUTO"; updatedAt: string };
 type Activity = { buyerId: string; kind: "BROADCAST" | "COMMENT"; status: string; label: string; link?: string; at: string };
@@ -62,8 +62,32 @@ function cleanGroups(value: unknown): string[] {
 }
 function split(value: unknown): string[] { return String(value ?? "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean).slice(0, 60); }
 
+function hasPlanAccess(store: Store, buyer: Buyer, plan: Plan) {
+  const subscriptions = store.subscriptions.filter((item) => item.buyerId === buyer.id && item.plan === plan);
+  return subscriptions.length ? subscriptions.some((item) => item.status === "ACTIVE" && Date.parse(item.endsAt) > Date.now()) : plan === "BROADCAST" ? buyer.planBroadcast : buyer.planComment;
+}
+function releaseWorker(store: Store, buyer: Buyer) {
+  if (!buyer.workerId) return;
+  const worker = store.workers.find((item) => item.id === buyer.workerId);
+  if (worker) {
+    worker.buyerId = null; worker.status = "COOLDOWN";
+    worker.cooldownUntil = new Date(Date.now() + Math.max(0, Number(process.env.WORKER_COOLDOWN_DAYS ?? 3)) * 86_400_000).toISOString();
+  }
+  buyer.workerId = null;
+}
 function cleanup(store: Store) {
   const ago = (days: number) => Date.now() - days * 86_400_000;
+  for (const subscription of store.subscriptions) if (subscription.status === "ACTIVE" && Date.parse(subscription.endsAt) <= Date.now()) subscription.status = "EXPIRED";
+  for (const worker of store.workers) if (worker.status === "COOLDOWN" && worker.cooldownUntil && Date.parse(worker.cooldownUntil) <= Date.now()) { worker.status = "AVAILABLE"; delete worker.cooldownUntil; }
+  for (const buyer of store.buyers) {
+    const ownsSubscription = store.subscriptions.some((item) => item.buyerId === buyer.id);
+    if (!ownsSubscription) continue;
+    if (!hasPlanAccess(store, buyer, "BROADCAST")) { buyer.planBroadcast = false; buyer.broadcastActive = false; releaseWorker(store, buyer); }
+    if (!hasPlanAccess(store, buyer, "COMMENT")) { buyer.planComment = false; buyer.commentActive = false; buyer.commentAccountConnected = false; }
+  }
+  const expiredBuyerIds = new Set(store.buyers.filter((buyer) => !hasPlanAccess(store, buyer, "COMMENT")).map((buyer) => buyer.id));
+  store.approvalCandidates = store.approvalCandidates.filter((item) => !expiredBuyerIds.has(item.buyerId));
+  store.dedupe = store.dedupe.filter((item) => !expiredBuyerIds.has(item.buyerId));
   store.approvalCandidates = store.approvalCandidates.filter((item) => Date.parse(item.createdAt) > ago(2));
   store.dedupe = store.dedupe.filter((item) => Date.parse(item.at) > ago(7));
   const byBuyer = new Map<string, Activity[]>();
@@ -72,9 +96,8 @@ function cleanup(store: Store) {
 }
 
 app.get("/api/buyer/dashboard", async (req, reply) => {
-  const store = await load(); const buyer = buyerForRequest(store, req);
+  const store = await load(); cleanup(store); await save(store); const buyer = buyerForRequest(store, req);
   if (!buyer) return { onboarding: true, buyer: null, worker: null, broadcast: null, comment: null, activity: [] };
-  cleanup(store); await save(store);
   return {
     buyer,
     worker: buyer.workerId ? store.workers.find((item) => item.id === buyer.workerId) ?? null : null,
@@ -100,15 +123,15 @@ app.post<{ Body: { plan?: Plan } }>("/api/public/checkout", async (req, reply) =
 });
 
 app.post<{ Body: { feature: "BROADCAST" | "COMMENT"; active: boolean } }>("/api/buyer/toggle", async (req, reply) => {
-  const store = await load(); const buyer = buyerForRequest(store, req);
+  const store = await load(); cleanup(store); await save(store); const buyer = buyerForRequest(store, req);
   if (!buyer) return reply.code(404).send({ error: "buyer_not_found", reason: "Layanan belum disiapkan untuk akun Telegram ini." });
   const feature = req.body.feature;
   if (feature === "BROADCAST") {
-    const ready = buyer.planBroadcast && buyer.workerId && store.broadcasts.some((item) => item.buyerId === buyer.id);
+    const ready = hasPlanAccess(store, buyer, "BROADCAST") && buyer.workerId && store.broadcasts.some((item) => item.buyerId === buyer.id);
     if (req.body.active && !ready) return reply.code(409).send({ error: "setup_incomplete", reason: "Admin belum menyelesaikan setup Auto Sebar lo." });
     buyer.broadcastActive = req.body.active;
   } else {
-    const ready = buyer.planComment && buyer.commentAccountConnected && store.commentConfigs.some((item) => item.buyerId === buyer.id);
+    const ready = hasPlanAccess(store, buyer, "COMMENT") && buyer.commentAccountConnected && store.commentConfigs.some((item) => item.buyerId === buyer.id);
     if (req.body.active && !ready) return reply.code(409).send({ error: "setup_incomplete", reason: "Hubungkan akun dan lengkapi setup Auto Komen dulu." });
     buyer.commentActive = req.body.active;
   }
@@ -117,8 +140,9 @@ app.post<{ Body: { feature: "BROADCAST" | "COMMENT"; active: boolean } }>("/api/
 
 app.post("/api/buyer/connect-comment-account", async (req, reply) => {
   // Placeholder integrasi MTProto: UI/bot login harus dipasang saat API Telegram client tersedia.
-  const store = await load(); const buyer = buyerForRequest(store, req);
+  const store = await load(); cleanup(store); await save(store); const buyer = buyerForRequest(store, req);
   if (!buyer) return reply.code(404).send({ error: "buyer_not_found", reason: "Layanan belum disiapkan untuk akun Telegram ini." });
+  if (!hasPlanAccess(store, buyer, "COMMENT")) return reply.code(403).send({ error: "subscription_required", reason: "Akses Auto Komen lo belum aktif." });
   buyer.commentAccountConnected = true; buyer.updatedAt = now(); await save(store);
   return { ok: true, next: "Akun berhasil tersambung." };
 });
@@ -128,8 +152,8 @@ app.post("/api/buyer/connect-comment-account", async (req, reply) => {
 app.post<{ Body: { buyerId?: string; base?: string; messageId?: string; link?: string; text?: string } }>("/api/internal/incoming-message", async (req, reply) => {
   const body = req.body ?? {}; const targetBuyer = String(body.buyerId ?? ""); const base = String(body.base ?? "").replace(/^@/, ""); const messageId = String(body.messageId ?? ""); const text = String(body.text ?? "").toLowerCase();
   if (!targetBuyer || !base || !messageId || !text) return reply.code(400).send({ error: "buyerId, base, messageId, dan text wajib ada." });
-  const store = await load(); const buyer = store.buyers.find((item) => item.id === targetBuyer); const config = store.commentConfigs.find((item) => item.buyerId === targetBuyer);
-  if (!buyer?.commentActive || !config || !buyer.commentAccountConnected) return { action: "ignored", reason: "comment_off_or_not_ready" };
+  const store = await load(); cleanup(store); await save(store); const buyer = store.buyers.find((item) => item.id === targetBuyer); const config = store.commentConfigs.find((item) => item.buyerId === targetBuyer);
+  if (!buyer?.commentActive || !hasPlanAccess(store, buyer, "COMMENT") || !config || !buyer.commentAccountConnected) return { action: "ignored", reason: "comment_off_or_not_ready" };
   const baseAllowed = config.bases.some((item) => item.toLowerCase() === base.toLowerCase());
   const hitKeyword = config.keywords.some((item) => text.includes(item.toLowerCase()));
   const hitBlacklist = config.blacklist.some((item) => text.includes(item.toLowerCase()));
@@ -147,8 +171,9 @@ app.post<{ Body: { buyerId?: string; base?: string; messageId?: string; link?: s
 });
 
 app.post<{ Params: { id: string } }>("/api/buyer/approval/:id/send", async (req, reply) => {
-  const store = await load(); const candidate = store.approvalCandidates.find((item) => item.id === req.params.id && item.buyerId === buyerId(req));
+  const store = await load(); cleanup(store); await save(store); const buyer = buyerForRequest(store, req); const candidate = store.approvalCandidates.find((item) => item.id === req.params.id && item.buyerId === buyer?.id);
   if (!candidate) return reply.code(404).send({ error: "Kandidat sudah habis atau tidak ditemukan." });
+  if (!buyer || !hasPlanAccess(store, buyer, "COMMENT")) return reply.code(403).send({ error: "subscription_required", reason: "Akses Auto Komen lo sudah tidak aktif." });
   store.activities.unshift({ buyerId: candidate.buyerId, kind: "COMMENT", status: "queued", label: `Komentar disetujui · @${candidate.base}`, link: candidate.link, at: now() });
   store.approvalCandidates = store.approvalCandidates.filter((item) => item.id !== candidate.id); cleanup(store); await save(store);
   return { ok: true };
@@ -187,11 +212,11 @@ app.post<{ Params: { id: string }; Body: { planBroadcast?: boolean; planComment?
   buyer.planBroadcast = Boolean(req.body.planBroadcast); buyer.planComment = Boolean(req.body.planComment);
   if (buyer.planBroadcast) {
     const worker = store.workers.find((item) => item.id === req.body.workerId);
-    if (!worker || (worker.buyerId && worker.buyerId !== buyer.id)) return reply.code(409).send({ error: "Pilih worker yang tersedia untuk buyer ini." });
+    if (!worker || (worker.status !== "AVAILABLE" && worker.buyerId !== buyer.id)) return reply.code(409).send({ error: "Pilih worker yang tersedia untuk buyer ini." });
     if (!String(req.body.wording ?? "").trim()) return reply.code(400).send({ error: "Wording Auto Sebar wajib diisi." });
     let groups: string[]; try { groups = cleanGroups(req.body.groups); } catch (error) { return reply.code(400).send({ error: (error as Error).message }); }
     for (const item of store.workers) if (item.buyerId === buyer.id && item.id !== worker.id) { item.buyerId = null; item.status = "AVAILABLE"; }
-    worker.buyerId = buyer.id; worker.status = "ASSIGNED"; buyer.workerId = worker.id;
+    worker.buyerId = buyer.id; worker.status = "ASSIGNED"; delete worker.cooldownUntil; buyer.workerId = worker.id;
     const broadcast: Broadcast = { buyerId: buyer.id, wording: String(req.body.wording).trim().slice(0, 4000), groups, intervalMinutes: Math.min(120, Math.max(5, Number(req.body.intervalMinutes) || 15)), updatedBy: "ADMIN", updatedAt: now() };
     store.broadcasts = [...store.broadcasts.filter((item) => item.buyerId !== buyer.id), broadcast];
   } else { buyer.broadcastActive = false; buyer.workerId = null; store.broadcasts = store.broadcasts.filter((item) => item.buyerId !== buyer.id); }
@@ -217,5 +242,5 @@ if (token) {
   void bot.start();
 }
 
-setInterval(async () => { const store = await load(); cleanup(store); await save(store); }, 60 * 60_000).unref();
+setInterval(async () => { const store = await load(); cleanup(store); await save(store); }, 5 * 60_000).unref();
 await app.listen({ port: Number(process.env.PORT ?? 8787), host: "0.0.0.0" });
