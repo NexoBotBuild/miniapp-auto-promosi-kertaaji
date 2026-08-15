@@ -29,6 +29,8 @@ function telegramUserId(req: any): string | null {
   if (!botToken) return null;
   const data = new URLSearchParams(initData); const receivedHash = data.get("hash");
   if (!receivedHash) return null;
+  const authDate = Number(data.get("auth_date") ?? 0);
+  if (!Number.isFinite(authDate) || authDate < 1 || Date.now() / 1000 - authDate > 86_400) return null;
   data.delete("hash");
   const checkString = [...data.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => key + "=" + value).join("\n");
   const secret = createHmac("sha256", "WebAppData").update(botToken).digest();
