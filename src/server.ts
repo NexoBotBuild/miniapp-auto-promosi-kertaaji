@@ -13,16 +13,18 @@ type Broadcast = { buyerId: string; wording: string; groups: string[]; intervalM
 type CommentConfig = { buyerId: string; bases: string[]; division: string; keywords: string[]; blacklist: string[]; wording: string; mode: "APPROVAL" | "AUTO"; updatedAt: string };
 type Activity = { buyerId: string; kind: "BROADCAST" | "COMMENT"; status: string; label: string; link?: string; at: string };
 type Candidate = { id: string; buyerId: string; base: string; messageId: string; link: string; createdAt: string };
-type Store = { buyers: Buyer[]; workers: Worker[]; broadcasts: Broadcast[]; commentConfigs: CommentConfig[]; activities: Activity[]; approvalCandidates: Candidate[]; dedupe: { buyerId: string; base: string; messageId: string; at: string }[] };
+type AccessRequest = { id: string; telegramId: string; plan: "BROADCAST" | "COMMENT"; createdAt: string };
+type Store = { buyers: Buyer[]; workers: Worker[]; broadcasts: Broadcast[]; commentConfigs: CommentConfig[]; activities: Activity[]; approvalCandidates: Candidate[]; dedupe: { buyerId: string; base: string; messageId: string; at: string }[]; accessRequests: AccessRequest[] };
 
 const root = dirname(fileURLToPath(import.meta.url));
 const dataFile = join(root, "../data/store.json");
 const app = Fastify({ logger: true });
 if (process.env.NODE_ENV === "production") await app.register(fastifyStatic, { root: join(root, "../dist") });
+let bot: Bot | undefined;
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 
-async function load(): Promise<Store> { return JSON.parse(await readFile(dataFile, "utf8")) as Store; }
+async function load(): Promise<Store> { const store = JSON.parse(await readFile(dataFile, "utf8")) as Partial<Store>; return { ...store, accessRequests: store.accessRequests ?? [] } as Store; }
 async function save(store: Store) { await writeFile(dataFile, JSON.stringify(store, null, 2) + "\n"); }
 function telegramUserId(req: any): string | null {
   const initData = String(req.headers["x-telegram-init-data"] ?? "");
@@ -66,7 +68,7 @@ function cleanup(store: Store) {
 
 app.get("/api/buyer/dashboard", async (req, reply) => {
   const store = await load(); const buyer = buyerForRequest(store, req);
-  if (!buyer) return reply.code(404).send({ error: "buyer_not_found", reason: "Layanan belum disiapkan untuk akun Telegram ini." });
+  if (!buyer) return { onboarding: true, buyer: null, worker: null, broadcast: null, comment: null, activity: [] };
   cleanup(store); await save(store);
   return {
     buyer,
@@ -75,6 +77,18 @@ app.get("/api/buyer/dashboard", async (req, reply) => {
     comment: store.commentConfigs.find((item) => item.buyerId === buyer.id) ?? null,
     activity: store.activities.filter((item) => item.buyerId === buyer.id).sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 12),
   };
+});
+
+app.post<{ Body: { plan?: "BROADCAST" | "COMMENT" } }>("/api/public/access-request", async (req, reply) => {
+  const plan = req.body?.plan === "COMMENT" ? "COMMENT" : req.body?.plan === "BROADCAST" ? "BROADCAST" : null;
+  const telegramId = telegramUserId(req);
+  if (!plan || !telegramId) return reply.code(401).send({ error: "open_from_telegram", reason: "Buka layanan ini dari bot Telegram untuk meminta akses." });
+  const store = await load(); const exists = store.accessRequests.some((item) => item.telegramId === telegramId && item.plan === plan);
+  if (!exists) store.accessRequests.unshift({ id: id("request"), telegramId, plan, createdAt: now() });
+  await save(store);
+  const adminId = process.env.ADMIN_TELEGRAM_ID ?? process.env.ADMIN_TELEGRAM_IDS?.split(",")[0]?.trim();
+  if (bot && adminId) await bot.api.sendMessage(adminId, "Permintaan akses baru\nPaket: " + (plan === "BROADCAST" ? "Auto Sebar" : "Auto Komen MF") + "\nID Telegram: " + telegramId).catch((error) => app.log.error(error, "Notifikasi permintaan akses gagal"));
+  return { ok: true };
 });
 
 app.post<{ Body: { feature: "BROADCAST" | "COMMENT"; active: boolean } }>("/api/buyer/toggle", async (req, reply) => {
@@ -185,7 +199,7 @@ app.post("/api/payments/doku/webhook", async (_req, reply) => reply.code(501).se
 
 const token = process.env.BOT_TOKEN;
 if (token) {
-  const bot = new Bot(token);
+  bot = new Bot(token);
   const miniAppUrl = process.env.MINIAPP_URL;
   if (miniAppUrl) void bot.api.setChatMenuButton({ menu_button: { type: "web_app", text: "Buka layanan", web_app: { url: miniAppUrl } } }).catch((error) => app.log.error(error, "Menu Mini App belum tersambung"));
   bot.command("start", async (ctx) => {

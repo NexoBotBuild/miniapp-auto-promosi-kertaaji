@@ -5,7 +5,7 @@ import "./styles.css";
 
 type Worker = { id: string; label: string; username: string; status: string; buyerId: string | null };
 type Buyer = { id: string; name: string; planBroadcast: boolean; planComment: boolean; broadcastActive: boolean; commentActive: boolean; commentAccountConnected: boolean; workerId: string | null };
-type Dashboard = { buyer: Buyer; worker: Worker | null; broadcast: { wording: string; groups: string[]; intervalMinutes: number } | null; comment: { bases: string[]; division: string; keywords: string[]; blacklist: string[]; wording: string; mode: "APPROVAL" | "AUTO" } | null; activity: { kind: string; status: string; label: string; at: string }[] };
+type Dashboard = { onboarding?: boolean; buyer: Buyer | null; worker: Worker | null; broadcast: { wording: string; groups: string[]; intervalMinutes: number } | null; comment: { bases: string[]; division: string; keywords: string[]; blacklist: string[]; wording: string; mode: "APPROVAL" | "AUTO" } | null; activity: { kind: string; status: string; label: string; at: string }[] };
 declare global { interface Window { Telegram?: { WebApp?: { initData: string; ready: () => void; expand: () => void } } } }
 const telegramApp = window.Telegram?.WebApp;
 telegramApp?.ready(); telegramApp?.expand();
@@ -26,6 +26,22 @@ function ProductIcon({ name }: { name: ProductIconName }) {
 
 function activityLabel(kind: string) { return kind === "broadcast" ? "Sebar" : "Komen"; }
 
+function WelcomeApp() {
+  const [chosen, setChosen] = useState<"BROADCAST" | "COMMENT" | "">(""); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
+  const choose = async (plan: "BROADCAST" | "COMMENT") => {
+    setBusy(true); setError("");
+    try { await api("/api/public/access-request", { method: "POST", headers: buyerHeaders, body: JSON.stringify({ plan }) }); setChosen(plan); }
+    catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  };
+  return <main className="shell welcome">
+    <header><div className="eyebrow">PUSAT PROMOSI</div><h1>Mulai dari layanan yang lo butuhkan.</h1><p>Pilih satu layanan dulu. Admin akan menyiapkan akses dan mengirim detailnya lewat bot.</p></header>
+    {error && <div className="notice error">{error}</div>}
+    <section className="package-card package-broadcast"><div className="package-head"><span className="icon-tile broadcast-icon"><ProductIcon name="broadcast" /></span><span className="package-index">01</span></div><div className="label">AUTO SEBAR</div><h2>Sebar promosi lebih terarah.</h2><p>Konten lo dikirim bergantian ke daftar grup yang telah disiapkan untuk layanan lo.</p><div className="package-notes"><span>Akun promosi khusus</span><span>Hingga 15 grup tujuan</span></div><button className="package-action" disabled={busy || chosen === "BROADCAST"} onClick={() => void choose("BROADCAST")}>{chosen === "BROADCAST" ? "Permintaan sudah dikirim" : "Pilih Auto Sebar"}</button></section>
+    <section className="package-card package-comment"><div className="package-head"><span className="icon-tile comment-icon"><ProductIcon name="comment" /></span><span className="package-index">02</span></div><div className="label">AUTO KOMEN MF</div><h2>Tangkap peluang yang sesuai.</h2><p>Gunakan akun lo untuk memantau base pilihan dan menanggapi post yang relevan.</p><div className="package-notes"><span>Base dan keyword pilihan lo</span><span>Approval atau otomatis</span></div><button className="package-action orange-action" disabled={busy || chosen === "COMMENT"} onClick={() => void choose("COMMENT")}>{chosen === "COMMENT" ? "Permintaan sudah dikirim" : "Pilih Auto Komen"}</button></section>
+    <p className="welcome-foot">{chosen ? "Sip. Permintaan lo sudah masuk; admin akan lanjut menyiapkan layanan lo." : "Belum siap memilih? Lo tetap bisa kembali ke chat bot kapan saja."}</p>
+  </main>;
+}
+
 function BuyerApp() {
   const [data, setData] = useState<Dashboard | null>(null); const [error, setError] = useState(""); const [busy, setBusy] = useState("");
   const load = async () => { try { setData(await api<Dashboard>("/api/buyer/dashboard", { headers: buyerHeaders })); } catch (e) { setError((e as Error).message); } };
@@ -33,6 +49,7 @@ function BuyerApp() {
   const change = async (feature: "BROADCAST" | "COMMENT", active: boolean) => { setBusy(feature); setError(""); try { await api("/api/buyer/toggle", { method: "POST", headers: buyerHeaders, body: JSON.stringify({ feature, active }) }); await load(); } catch (e) { setError((e as Error).message); } finally { setBusy(""); } };
   const connect = async () => { setBusy("CONNECT"); try { await api("/api/buyer/connect-comment-account", { method: "POST", headers: buyerHeaders }); await load(); } catch (e) { setError((e as Error).message); } finally { setBusy(""); } };
   if (!data) return <main className="shell loading">{error ? <div className="notice error">{error}</div> : "Memuat layanan…"}</main>;
+  if (!data.buyer) return <WelcomeApp />;
   const { buyer, worker, broadcast, comment } = data;
   return <main className="shell">
     <header><div className="eyebrow">PUSAT PROMOSI</div><h1>Halo, {buyer.name}.</h1><p>Layanan lo sudah disiapkan. Tinggal pantau dan nyalakan saat diperlukan.</p></header>
