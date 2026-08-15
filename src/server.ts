@@ -156,7 +156,7 @@ app.post<{ Params: { id: string } }>("/api/buyer/approval/:id/send", async (req,
 
 app.get("/api/admin/overview", { preHandler: adminOnly }, async () => {
   const store = await load(); cleanup(store); await save(store);
-  return { buyers: store.buyers, workers: store.workers, broadcasts: store.broadcasts, comments: store.commentConfigs };
+  return { buyers: store.buyers, workers: store.workers, broadcasts: store.broadcasts, comments: store.commentConfigs, accessRequests: store.accessRequests };
 });
 
 app.post<{ Body: { name?: string; telegramId?: string } }>("/api/admin/buyers", { preHandler: adminOnly }, async (req, reply) => {
