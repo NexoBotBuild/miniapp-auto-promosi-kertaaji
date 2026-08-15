@@ -14,9 +14,10 @@ type CommentConfig = { buyerId: string; bases: string[]; division: string; keywo
 type Activity = { buyerId: string; kind: "BROADCAST" | "COMMENT"; status: string; label: string; link?: string; at: string };
 type Candidate = { id: string; buyerId: string; base: string; messageId: string; link: string; createdAt: string };
 type Plan = "BROADCAST" | "COMMENT";
-type Payment = { id: string; telegramId: string; plan: Plan; amount: number; status: "PENDING" | "PAID" | "FAILED" | "EXPIRED"; gatewayReference?: string; createdAt: string; paidAt?: string };
+type Package = { plan: Plan; name: string; price: number; durationDays: number; enabled: boolean; updatedAt: string };
+type Payment = { id: string; telegramId: string; plan: Plan; amount: number; durationDays: number; status: "PENDING" | "PAID" | "FAILED" | "EXPIRED"; gatewayReference?: string; createdAt: string; paidAt?: string };
 type Subscription = { id: string; buyerId: string; plan: Plan; status: "ACTIVE" | "EXPIRED"; startsAt: string; endsAt: string };
-type Store = { buyers: Buyer[]; workers: Worker[]; broadcasts: Broadcast[]; commentConfigs: CommentConfig[]; activities: Activity[]; approvalCandidates: Candidate[]; dedupe: { buyerId: string; base: string; messageId: string; at: string }[]; payments: Payment[]; subscriptions: Subscription[] };
+type Store = { buyers: Buyer[]; workers: Worker[]; broadcasts: Broadcast[]; commentConfigs: CommentConfig[]; activities: Activity[]; approvalCandidates: Candidate[]; dedupe: { buyerId: string; base: string; messageId: string; at: string }[]; payments: Payment[]; subscriptions: Subscription[]; packages: Package[] };
 
 const root = dirname(fileURLToPath(import.meta.url));
 const dataFile = join(root, "../data/store.json");
@@ -26,7 +27,8 @@ let bot: Bot | undefined;
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 
-async function load(): Promise<Store> { const store = JSON.parse(await readFile(dataFile, "utf8")) as Partial<Store>; const ready = { ...store, payments: store.payments ?? [], subscriptions: store.subscriptions ?? [] } as Store; for (const worker of ready.workers) if (worker.status === "COOLDOWN") { worker.status = "AVAILABLE"; worker.buyerId = null; delete worker.cooldownUntil; } return ready; }
+const defaultPackages = (): Package[] => [{ plan: "BROADCAST", name: "Auto Sebar", price: 0, durationDays: 30, enabled: false, updatedAt: now() }, { plan: "COMMENT", name: "Auto Komen MF", price: 0, durationDays: 30, enabled: false, updatedAt: now() }];
+async function load(): Promise<Store> { const store = JSON.parse(await readFile(dataFile, "utf8")) as Partial<Store>; const ready = { ...store, payments: store.payments ?? [], subscriptions: store.subscriptions ?? [], packages: store.packages ?? defaultPackages() } as Store; for (const worker of ready.workers) if (worker.status === "COOLDOWN") { worker.status = "AVAILABLE"; worker.buyerId = null; delete worker.cooldownUntil; } return ready; }
 async function save(store: Store) { await writeFile(dataFile, JSON.stringify(store, null, 2) + "\n"); }
 function telegramUserId(req: any): string | null {
   const initData = String(req.headers["x-telegram-init-data"] ?? "");
@@ -110,12 +112,14 @@ app.get("/api/app/session", async (req, reply) => {
   return { role: isAdmin(req) ? "ADMIN" : "BUYER" };
 });
 
-const planAmount = (plan: Plan) => Number(plan === "BROADCAST" ? process.env.PLAN_BROADCAST_PRICE : process.env.PLAN_COMMENT_PRICE) || 0;
+app.get("/api/public/packages", async () => {
+  const store = await load(); return store.packages.filter((item) => item.enabled).map(({ plan, name, price, durationDays }) => ({ plan, name, price, durationDays }));
+});
 app.post<{ Body: { plan?: Plan } }>("/api/public/checkout", async (req, reply) => {
   const plan = req.body?.plan === "COMMENT" ? "COMMENT" : req.body?.plan === "BROADCAST" ? "BROADCAST" : null;
-  const telegramId = telegramUserId(req); const amount = plan ? planAmount(plan) : 0;
+  const telegramId = telegramUserId(req); const store = await load(); const selectedPackage = plan ? store.packages.find((item) => item.plan === plan && item.enabled) : undefined;
   if (!plan || !telegramId) return reply.code(401).send({ error: "open_from_telegram", reason: "Buka layanan ini dari bot Telegram untuk berlangganan." });
-  if (amount < 1) return reply.code(409).send({ error: "package_unavailable", reason: "Paket ini belum dibuka untuk pembayaran." });
+  if (!selectedPackage || selectedPackage.price < 1) return reply.code(409).send({ error: "package_unavailable", reason: "Paket ini belum dibuka untuk pembayaran." });
   if (!process.env.DOKU_CLIENT_ID || !process.env.DOKU_SECRET_KEY) return reply.code(503).send({ error: "payment_unavailable", reason: "Pembayaran belum diaktifkan." });
   return reply.code(503).send({ error: "checkout_preparing", reason: "Pembayaran untuk paket ini sedang disiapkan." });
 });
@@ -179,7 +183,21 @@ app.post<{ Params: { id: string } }>("/api/buyer/approval/:id/send", async (req,
 
 app.get("/api/admin/overview", { preHandler: adminOnly }, async () => {
   const store = await load(); cleanup(store); await save(store);
-  return { buyers: store.buyers, workers: store.workers, broadcasts: store.broadcasts, comments: store.commentConfigs, subscriptions: store.subscriptions };
+  return { buyers: store.buyers, workers: store.workers, broadcasts: store.broadcasts, comments: store.commentConfigs, subscriptions: store.subscriptions, packages: store.packages };
+});
+
+app.put<{ Body: { packages?: { plan?: Plan; price?: number; durationDays?: number; enabled?: boolean }[] } }>("/api/admin/packages", { preHandler: adminOnly }, async (req, reply) => {
+  const incoming = req.body?.packages;
+  if (!Array.isArray(incoming) || incoming.length !== 2) return reply.code(400).send({ error: "Lengkapi dua paket langganan." });
+  const store = await load(); const next: Package[] = [];
+  for (const plan of ["BROADCAST", "COMMENT"] as Plan[]) {
+    const current = incoming.find((item) => item.plan === plan);
+    const existing = store.packages.find((item) => item.plan === plan);
+    const price = Math.max(0, Math.floor(Number(current?.price) || 0)); const durationDays = Math.max(1, Math.min(365, Math.floor(Number(current?.durationDays) || 30)));
+    if (!current || price > 10_000_000) return reply.code(400).send({ error: "Harga paket tidak valid." });
+    next.push({ plan, name: existing?.name ?? (plan === "BROADCAST" ? "Auto Sebar" : "Auto Komen MF"), price, durationDays, enabled: Boolean(current.enabled), updatedAt: now() });
+  }
+  store.packages = next; await save(store); return { packages: store.packages };
 });
 
 app.post<{ Body: { name?: string; telegramId?: string } }>("/api/admin/buyers", { preHandler: adminOnly }, async (req, reply) => {
