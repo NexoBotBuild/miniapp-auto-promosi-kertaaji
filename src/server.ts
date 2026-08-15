@@ -44,6 +44,9 @@ function telegramUserId(req: any): string | null {
   try { return String(JSON.parse(data.get("user") ?? "{}").id || "") || null; } catch { return null; }
 }
 function buyerId(req: any) { return telegramUserId(req); }
+function adminIds() { return new Set((process.env.ADMIN_TELEGRAM_IDS ?? process.env.ADMIN_TELEGRAM_ID ?? "").split(",").map((item) => item.trim()).filter(Boolean)); }
+function isAdmin(req: any) { const telegramId = telegramUserId(req); return Boolean(telegramId && adminIds().has(telegramId)); }
+async function adminOnly(req: any, reply: any) { if (!isAdmin(req)) return reply.code(403).send({ error: "admin_only", reason: "Halaman ini khusus pengelola layanan." }); }
 function buyerForRequest(store: Store, req: any) {
   const requester = buyerId(req);
   return store.buyers.find((item) => item.telegramId === requester)
@@ -77,6 +80,11 @@ app.get("/api/buyer/dashboard", async (req, reply) => {
     comment: store.commentConfigs.find((item) => item.buyerId === buyer.id) ?? null,
     activity: store.activities.filter((item) => item.buyerId === buyer.id).sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, 12),
   };
+});
+
+app.get("/api/app/session", async (req, reply) => {
+  if (!telegramUserId(req)) return reply.code(401).send({ error: "open_from_telegram", reason: "Buka layanan ini dari bot Telegram." });
+  return { role: isAdmin(req) ? "ADMIN" : "BUYER" };
 });
 
 app.post<{ Body: { plan?: "BROADCAST" | "COMMENT" } }>("/api/public/access-request", async (req, reply) => {
@@ -146,19 +154,19 @@ app.post<{ Params: { id: string } }>("/api/buyer/approval/:id/send", async (req,
   return { ok: true };
 });
 
-app.get("/api/admin/overview", async () => {
+app.get("/api/admin/overview", { preHandler: adminOnly }, async () => {
   const store = await load(); cleanup(store); await save(store);
   return { buyers: store.buyers, workers: store.workers, broadcasts: store.broadcasts, comments: store.commentConfigs };
 });
 
-app.post<{ Body: { name?: string; telegramId?: string } }>("/api/admin/buyers", async (req, reply) => {
+app.post<{ Body: { name?: string; telegramId?: string } }>("/api/admin/buyers", { preHandler: adminOnly }, async (req, reply) => {
   const name = String(req.body.name ?? "").trim();
   if (!name) return reply.code(400).send({ error: "Nama buyer wajib diisi." });
   const store = await load(); const buyer: Buyer = { id: id("buyer"), name, telegramId: String(req.body.telegramId ?? ""), broadcastActive: false, commentActive: false, commentAccountConnected: false, planBroadcast: false, planComment: false, workerId: null, updatedAt: now() };
   store.buyers.push(buyer); await save(store); return { buyer };
 });
 
-app.post<{ Body: { label?: string; username?: string } }>("/api/admin/workers", async (req, reply) => {
+app.post<{ Body: { label?: string; username?: string } }>("/api/admin/workers", { preHandler: adminOnly }, async (req, reply) => {
   const label = String(req.body.label ?? "").trim(); const username = String(req.body.username ?? "").trim().replace(/^@/, "");
   if (!label || !/^[A-Za-z][A-Za-z0-9_]{3,}$/.test(username)) return reply.code(400).send({ error: "Isi label dan username akun worker yang valid." });
   const store = await load();
@@ -166,14 +174,14 @@ app.post<{ Body: { label?: string; username?: string } }>("/api/admin/workers", 
   const worker: Worker = { id: id("worker"), label, username, status: "AVAILABLE", buyerId: null, createdAt: now() }; store.workers.push(worker); await save(store); return { worker };
 });
 
-app.delete<{ Params: { id: string } }>("/api/admin/workers/:id", async (req, reply) => {
+app.delete<{ Params: { id: string } }>("/api/admin/workers/:id", { preHandler: adminOnly }, async (req, reply) => {
   const store = await load(); const worker = store.workers.find((item) => item.id === req.params.id);
   if (!worker) return reply.code(404).send({ error: "Worker tidak ditemukan." });
   if (worker.buyerId) return reply.code(409).send({ error: "Worker sedang dipakai buyer dan tidak bisa dihapus." });
   store.workers = store.workers.filter((item) => item.id !== worker.id); await save(store); return { ok: true };
 });
 
-app.post<{ Params: { id: string }; Body: { planBroadcast?: boolean; planComment?: boolean; workerId?: string | null; wording?: string; groups?: string[]; intervalMinutes?: number; bases?: string; division?: string; keywords?: string; blacklist?: string; commentWording?: string; mode?: "APPROVAL" | "AUTO" } }>("/api/admin/buyers/:id/setup", async (req, reply) => {
+app.post<{ Params: { id: string }; Body: { planBroadcast?: boolean; planComment?: boolean; workerId?: string | null; wording?: string; groups?: string[]; intervalMinutes?: number; bases?: string; division?: string; keywords?: string; blacklist?: string; commentWording?: string; mode?: "APPROVAL" | "AUTO" } }>("/api/admin/buyers/:id/setup", { preHandler: adminOnly }, async (req, reply) => {
   const store = await load(); const buyer = store.buyers.find((item) => item.id === req.params.id);
   if (!buyer) return reply.code(404).send({ error: "Buyer tidak ditemukan." });
   buyer.planBroadcast = Boolean(req.body.planBroadcast); buyer.planComment = Boolean(req.body.planComment);
@@ -205,6 +213,7 @@ if (token) {
   bot.command("start", async (ctx) => {
     await ctx.reply("Buka layanan promosi lo dari Mini App.", miniAppUrl ? { reply_markup: new InlineKeyboard().webApp("Buka Mini App", miniAppUrl) } : undefined);
   });
+  bot.command("id", async (ctx) => { await ctx.reply("ID Telegram lo: " + String(ctx.from?.id ?? "")); });
   void bot.start();
 }
 
