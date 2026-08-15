@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import Fastify from "fastify";
+import fastifyStatic from "@fastify/static";
 import { Bot, InlineKeyboard } from "grammy";
 
 type Buyer = { id: string; name: string; telegramId: string; broadcastActive: boolean; commentActive: boolean; commentAccountConnected: boolean; planBroadcast: boolean; planComment: boolean; workerId: string | null; updatedAt: string };
@@ -17,6 +18,7 @@ type Store = { buyers: Buyer[]; workers: Worker[]; broadcasts: Broadcast[]; comm
 const root = dirname(fileURLToPath(import.meta.url));
 const dataFile = join(root, "../data/store.json");
 const app = Fastify({ logger: true });
+if (process.env.NODE_ENV === "production") await app.register(fastifyStatic, { root: join(root, "../dist") });
 const now = () => new Date().toISOString();
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 
