@@ -30,10 +30,11 @@ type PaymentPlan = Plan | PackageService;
 type Package = { id: string; service: PackageService; name: string; price: number; durationDays: number; maxGroups: number; enabled: boolean; updatedAt: string };
 type Payment = { id: string; telegramId: string; packageId: string; plan: PaymentPlan; amount: number; durationDays: number; maxGroups: number; status: "PENDING" | "PAID" | "FAILED" | "EXPIRED"; gatewayReference?: string; paymentUrl?: string; withdrawalId?: string; createdAt: string; paidAt?: string };
 type Subscription = { id: string; buyerId: string; packageId: string; plan: Plan; maxGroups: number; status: "ACTIVE" | "EXPIRED"; startsAt: string; endsAt: string };
-type Withdrawal = { id: string; telegramId: string; grossAmount: number; fee: number; netAmount: number; status: "REQUESTED" | "PAID"; createdAt: string; paidAt?: string };
+type WalletType = "DANA" | "GoPay" | "OVO" | "ShopeePay" | "LinkAja";
+type Withdrawal = { id: string; telegramId: string; grossAmount: number; fee: number; netAmount: number; walletType: WalletType; walletNumber: string; walletOwner: string; status: "REQUESTED" | "PAID"; createdAt: string; paidAt?: string };
 type Store = { buyers: Buyer[]; workers: Worker[]; broadcasts: Broadcast[]; lpmTargets: LpmTarget[]; commentConfigs: CommentConfig[]; commentTargets: CommentTarget[]; activities: Activity[]; approvalCandidates: Candidate[]; commentJobs: CommentJob[]; dedupe: { buyerId: string; base: string; messageId: string; at: string }[]; payments: Payment[]; withdrawals: Withdrawal[]; subscriptions: Subscription[]; packages: Package[] };
 type CommerceOrder = { id: string; orderId: string; buyer: string; plan: PaymentPlan; durationDays: number; maxGroups: number; amount: number; status: Payment["status"]; createdAt: string; paidAt?: string };
-type CommerceWithdrawal = Pick<Withdrawal, "id" | "grossAmount" | "fee" | "netAmount" | "status" | "createdAt" | "paidAt">;
+type CommerceWithdrawal = Pick<Withdrawal, "id" | "grossAmount" | "fee" | "netAmount" | "walletType" | "walletNumber" | "walletOwner" | "status" | "createdAt" | "paidAt">;
 type Commerce = { today: number; week: number; month: number; paidCount: number; pendingBalance: number; availableBalance: number; requestedBalance: number; canRequestWithdrawal: boolean; orders: CommerceOrder[]; withdrawals: CommerceWithdrawal[] };
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -221,7 +222,7 @@ function commerceFor(store: Store): Commerce {
   const pendingBalance = total(unclaimed.filter((item) => pakasirAvailableAt(item.paidAt!).getTime() > current.getTime()));
   const availableBalance = total(unclaimed.filter((item) => pakasirAvailableAt(item.paidAt!).getTime() <= current.getTime()));
   const requestedBalance = store.withdrawals.filter((item) => item.status === "REQUESTED").reduce((sum, item) => sum + item.grossAmount, 0);
-  const withdrawals = [...store.withdrawals].sort((left, right) => Date.parse(right.paidAt ?? right.createdAt) - Date.parse(left.paidAt ?? left.createdAt)).slice(0, 20).map(({ id, grossAmount, fee, netAmount, status, createdAt, paidAt }) => ({ id, grossAmount, fee, netAmount, status, createdAt, paidAt }));
+  const withdrawals = [...store.withdrawals].sort((left, right) => Date.parse(right.paidAt ?? right.createdAt) - Date.parse(left.paidAt ?? left.createdAt)).slice(0, 20).map(({ id, grossAmount, fee, netAmount, walletType, walletNumber, walletOwner, status, createdAt, paidAt }) => ({ id, grossAmount, fee, netAmount, walletType, walletNumber, walletOwner, status, createdAt, paidAt }));
   return { today: total(paidOn((key) => key === today)), week: total(paidOn((key) => key >= weekStart && key <= today)), month: total(paidOn((key) => key.startsWith(month))), paidCount: paid.length, pendingBalance, availableBalance, requestedBalance, canRequestWithdrawal: withdrawWindowOpen(current) && availableBalance >= 30_000, orders, withdrawals };
 }
 function maxGroupsForBuyer(store: Store, buyer: Buyer) {
@@ -653,22 +654,29 @@ app.get("/api/admin/overview", { preHandler: adminOnly }, async () => {
 });
 
 const withdrawalFee = 5_000;
+const walletTypes = ["DANA", "GoPay", "OVO", "ShopeePay", "LinkAja"] as const;
 function withdrawalNotifyChatId() {
   const chatId = String(process.env.WITHDRAW_NOTIFY_TELEGRAM_ID ?? "").trim();
   if (!/^\d+$/.test(chatId)) throw new Error("Tujuan notifikasi penarikan belum diatur.");
   return chatId;
 }
-app.post("/api/admin/withdrawals", { preHandler: adminOnly }, async (req, reply) => {
+app.post<{ Body: { walletType?: string; walletNumber?: string; walletOwner?: string } }>("/api/admin/withdrawals", { preHandler: adminOnly }, async (req, reply) => {
   const store = await load(); const summary = commerceFor(store);
   if (!withdrawWindowOpen()) return reply.code(409).send({ error: "withdraw_window_closed", reason: "Penarikan bisa diajukan mulai pukul 12.30 WIB." });
   if (summary.availableBalance < 30_000) return reply.code(409).send({ error: "withdrawal_minimum", reason: "Saldo siap tarik belum mencapai Rp30.000." });
+  const walletType = String(req.body?.walletType ?? "") as WalletType;
+  const walletNumber = String(req.body?.walletNumber ?? "").replace(/\D/g, "");
+  const walletOwner = String(req.body?.walletOwner ?? "").trim().replace(/\s+/g, " ");
+  if (!walletTypes.includes(walletType)) return reply.code(400).send({ error: "wallet_invalid", reason: "Pilih e-wallet tujuan." });
+  if (walletNumber.length < 8 || walletNumber.length > 16) return reply.code(400).send({ error: "wallet_invalid", reason: "Isi nomor e-wallet yang benar." });
+  if (!walletOwner || walletOwner.length > 80) return reply.code(400).send({ error: "wallet_invalid", reason: "Isi nama pemilik e-wallet." });
   let notifyChatId: string; try { notifyChatId = withdrawalNotifyChatId(); } catch (error) { return reply.code(503).send({ error: "withdrawal_unavailable", reason: (error as Error).message }); }
   if (!bot) return reply.code(503).send({ error: "withdrawal_unavailable", reason: "Bot belum siap mengirim permintaan penarikan." });
   const eligible = store.payments.filter((item) => item.status === "PAID" && item.paidAt && (!item.withdrawalId || !store.withdrawals.some((withdrawal) => withdrawal.id === item.withdrawalId && (withdrawal.status === "REQUESTED" || withdrawal.status === "PAID"))) && pakasirAvailableAt(item.paidAt).getTime() <= Date.now());
   const grossAmount = eligible.reduce((sum, item) => sum + item.amount, 0);
   if (grossAmount !== summary.availableBalance) return reply.code(409).send({ error: "withdrawal_changed", reason: "Saldo berubah. Buka ulang halaman lalu coba lagi." });
-  const requester = telegramUser(req); const withdrawal: Withdrawal = { id: id("withdraw"), telegramId: requester?.id ?? "", grossAmount, fee: withdrawalFee, netAmount: grossAmount - withdrawalFee, status: "REQUESTED", createdAt: now() };
-  const text = ["Permintaan tarik saldo", `Diajukan oleh: ${requester?.name ?? "Admin client"}`, "", `Saldo siap tarik: Rp${new Intl.NumberFormat("id-ID").format(withdrawal.grossAmount)}`, `Potongan admin: Rp${new Intl.NumberFormat("id-ID").format(withdrawal.fee)}`, `Dikirim ke client: Rp${new Intl.NumberFormat("id-ID").format(withdrawal.netAmount)}`, "", `ID: ${withdrawal.id}`].join("\n");
+  const requester = telegramUser(req); const withdrawal: Withdrawal = { id: id("withdraw"), telegramId: requester?.id ?? "", grossAmount, fee: withdrawalFee, netAmount: grossAmount - withdrawalFee, walletType, walletNumber, walletOwner, status: "REQUESTED", createdAt: now() };
+  const text = ["Permintaan tarik saldo", `Diajukan oleh: ${requester?.name ?? "Admin client"}`, "", `Saldo siap tarik: Rp${new Intl.NumberFormat("id-ID").format(withdrawal.grossAmount)}`, `Potongan admin: Rp${new Intl.NumberFormat("id-ID").format(withdrawal.fee)}`, `Dikirim ke client: Rp${new Intl.NumberFormat("id-ID").format(withdrawal.netAmount)}`, "", "Tujuan e-wallet", `${withdrawal.walletType}: ${withdrawal.walletNumber}`, `a.n. ${withdrawal.walletOwner}`, "", `ID: ${withdrawal.id}`].join("\n");
   try { await bot.api.sendMessage(notifyChatId, text, { reply_markup: new InlineKeyboard().text("Tandai sudah dikirim", `wd:p:${withdrawal.id}`) }); }
   catch { return reply.code(502).send({ error: "withdrawal_notify_failed", reason: "Permintaan belum terkirim. Coba lagi." }); }
   for (const payment of eligible) payment.withdrawalId = withdrawal.id;
