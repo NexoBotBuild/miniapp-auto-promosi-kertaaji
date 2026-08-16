@@ -41,6 +41,8 @@ Jangan pakai Publishable/anon key untuk server. Secret key hanya untuk backend d
 
 ## Mengaktifkan pembayaran Pakasir
 
+Selama KYC Pakasir belum selesai, biarkan `SELF_SERVICE_SUBSCRIPTIONS=false`. Buyer akan melihat arahan untuk menghubungi admin, checkout dan webhook aktivasi otomatis ditutup, sementara admin tetap bisa memberi akses dari Panel Pelanggan. Saat Pakasir production siap, ubah variable itu menjadi `true` lalu deploy ulang.
+
 1. Buat proyek di Pakasir, lalu isi `PAKASIR_PROJECT` (slug proyek) dan `PAKASIR_API_KEY` di environment server.
 2. Di pengaturan proyek Pakasir, isi Webhook URL: `https://domain-miniapp-lo/api/payments/pakasir/webhook`.
 3. Untuk local test, pakai URL ngrok yang aktif sebagai domain Mini App dan Webhook URL, lalu gunakan mode Sandbox/Pembayaran simulasi Pakasir.
