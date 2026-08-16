@@ -8,15 +8,22 @@
     "dev:api": "tsx watch src/server.ts",
     "dev:web": "vite",
     "build": "tsc --noEmit && vite build",
-    "start": "NODE_ENV=production tsx src/server.ts"
+    "start": "NODE_ENV=production tsx src/server.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "worker:login": "tsx scripts/connect-worker.ts",
+    "worker:lpm": "tsx scripts/lpm-runner.ts"
   },
   "dependencies": {
-    "@fastify/static": "^8.3.0",
+    "@fastify/static": "^10.1.3",
+    "@types/pg": "^8.21.0",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.1",
     "grammy": "^1.35.0",
+    "pg": "^8.23.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "teleproto": "^1.228.5",
+    "tsx": "^4.19.2"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
@@ -24,7 +31,6 @@
     "@types/react-dom": "^19.0.2",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
-    "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vite": "^6.0.5"
   }

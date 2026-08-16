@@ -2,4 +2,6 @@ node_modules/
 dist/
 .env
 data/store.local.json
+data/worker-sessions.json
+data/comment-sessions.json
 .DS_Store

@@ -1,6 +1,16 @@
 {
-  "buyers": [
-    { "id": "buyer-demo", "name": "Buyer Demo", "telegramId": "0", "broadcastActive": false, "commentActive": false, "commentAccountConnected": false, "planBroadcast": false, "planComment": false, "workerId": null, "updatedAt": "2026-08-15T00:00:00.000Z" }
-  ],
-  "workers": [], "broadcasts": [], "commentConfigs": [], "activities": [], "approvalCandidates": [], "dedupe": []
+  "buyers": [],
+  "workers": [],
+  "broadcasts": [],
+  "lpmTargets": [],
+  "commentConfigs": [],
+  "commentTargets": [],
+  "activities": [],
+  "approvalCandidates": [],
+  "commentJobs": [],
+  "dedupe": [],
+  "payments": [],
+  "withdrawals": [],
+  "subscriptions": [],
+  "packages": []
 }

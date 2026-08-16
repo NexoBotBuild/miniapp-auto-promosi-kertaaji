@@ -1,0 +1,13 @@
+[build]
+builder = "RAILPACK"
+buildCommand = "npm run build"
+
+[deploy]
+startCommand = "npm start"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+# Satu token Telegram bot hanya boleh dipoll oleh satu instance.
+overlapSeconds = 0
+drainingSeconds = 10
