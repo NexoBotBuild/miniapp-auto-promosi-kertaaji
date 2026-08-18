@@ -10,7 +10,7 @@ import { Api, TelegramClient, password as telegramPassword } from "teleproto";
 import { StringSession } from "teleproto/sessions/index.js";
 import { loadPersistentStore, readEncryptedSessions, removeEncryptedSession, saveEncryptedSession, savePersistentStore } from "./database.js";
 
-type Buyer = { id: string; name: string; telegramId: string; broadcastActive: boolean; commentActive: boolean; commentAccountConnected: boolean; planBroadcast: boolean; planComment: boolean; workerId: string | null; updatedAt: string };
+type Buyer = { id: string; name: string; telegramId: string; broadcastActive: boolean; commentActive: boolean; commentAccountConnected: boolean; planBroadcast: boolean; planComment: boolean; workerId: string | null; updatedAt: string; broadcastEditingBy?: CommentActor; broadcastEditingUntil?: string };
 type Worker = { id: string; label: string; username: string; status: "AVAILABLE" | "ASSIGNED" | "COOLDOWN" | "DISABLED"; buyerId: string | null; cooldownUntil?: string; createdAt: string };
 type ForwardSource = { channel: string; messageId: number; showSource: boolean };
 type Broadcast = { buyerId: string; wording: string; mode: "TEXT" | "FORWARD"; forward?: ForwardSource; groups: string[]; intervalMinutes: number; updatedBy: "ADMIN" | "BUYER"; updatedAt: string; nextSendAt?: string; lastSentAt?: string; lastGroup?: string; groupCursor?: number; deliveryToken?: string; deliveryUntil?: string };
@@ -179,6 +179,9 @@ function commentConfigFor(store: Store, buyerId: string) { let config = store.co
 function commentLock(config: CommentConfig, actor: CommentActor) { const locked = config.editingBy && config.editingUntil && Date.parse(config.editingUntil) > Date.now(); if (locked && config.editingBy !== actor) throw new Error(config.editingBy === "ADMIN" ? "Setup sedang diatur admin." : "Setup sedang diatur buyer."); config.editingBy = actor; config.editingUntil = new Date(Date.now() + 10 * 60_000).toISOString(); return config; }
 function requireCommentLock(config: CommentConfig, actor: CommentActor) { if (config.editingBy !== actor || !config.editingUntil || Date.parse(config.editingUntil) <= Date.now()) throw new Error("Buka pengaturan dulu sebelum menyimpan."); }
 function unlockComment(config: CommentConfig, actor: CommentActor) { if (config.editingBy === actor) { delete config.editingBy; delete config.editingUntil; } }
+function broadcastLock(buyer: Buyer, actor: CommentActor) { const locked = buyer.broadcastEditingBy && buyer.broadcastEditingUntil && Date.parse(buyer.broadcastEditingUntil) > Date.now(); if (locked && buyer.broadcastEditingBy !== actor) throw new Error(buyer.broadcastEditingBy === "ADMIN" ? "Setup sedang diatur admin." : "Setup sedang diatur buyer."); buyer.broadcastEditingBy = actor; buyer.broadcastEditingUntil = new Date(Date.now() + 10 * 60_000).toISOString(); return buyer; }
+function requireBroadcastLock(buyer: Buyer, actor: CommentActor) { if (buyer.broadcastEditingBy !== actor || !buyer.broadcastEditingUntil || Date.parse(buyer.broadcastEditingUntil) <= Date.now()) throw new Error("Buka pengaturan dulu sebelum menyimpan."); }
+function unlockBroadcast(buyer: Buyer, actor: CommentActor) { if (buyer.broadcastEditingBy === actor) { delete buyer.broadcastEditingBy; delete buyer.broadcastEditingUntil; } }
 function scheduleNextBroadcast(broadcast: Broadcast, immediate = false) { broadcast.nextSendAt = immediate ? now() : new Date(Date.now() + broadcast.intervalMinutes * 60_000).toISOString(); broadcast.deliveryToken = undefined; broadcast.deliveryUntil = undefined; }
 function broadcastInterval(value: unknown) { return Math.max(1, Math.floor(Number(value) || 15)); }
 function cleanBroadcastWording(value: unknown) { const wording = String(value ?? ""); if (!wording.trim()) throw new Error("Isi wording promosi dulu."); if (Array.from(wording).length > 4096 || Buffer.byteLength(wording, "utf8") > 35_000) throw new Error("Wording terlalu panjang untuk dikirim Telegram."); return wording; }
@@ -814,11 +817,12 @@ app.put<{ Params: { id: string }; Body: { enabled?: boolean; workerId?: string; 
   const store = await load(); const buyer = store.buyers.find((item) => item.id === req.params.id);
   if (!buyer) return reply.code(404).send({ error: "Buyer tidak ditemukan." });
   if (!req.body.enabled) {
-    buyer.planBroadcast = false; buyer.broadcastActive = false;
+    buyer.planBroadcast = false; buyer.broadcastActive = false; unlockBroadcast(buyer, "ADMIN");
     for (const target of store.lpmTargets.filter((item) => item.buyerId === buyer.id && item.desired)) { target.desired = false; target.status = "REMOVING"; target.updatedAt = now(); }
     releaseWorkerWhenGroupsCleared(store, buyer); store.broadcasts = store.broadcasts.filter((item) => item.buyerId !== buyer.id);
     buyer.updatedAt = now(); await save(store); return { ok: true, buyer };
   }
+  try { requireBroadcastLock(buyer, "ADMIN"); } catch (error) { return reply.code(409).send({ error: "setup_locked", reason: (error as Error).message }); }
   const worker = store.workers.find((item) => item.id === req.body.workerId);
   if (!worker || (worker.status !== "AVAILABLE" && worker.buyerId !== buyer.id)) return reply.code(409).send({ error: "Pilih akun kerja yang tersedia." });
   let content: ReturnType<typeof broadcastContent>; try { content = broadcastContent(req.body ?? {}); } catch (error) { return reply.code(400).send({ error: (error as Error).message }); }
@@ -827,8 +831,18 @@ app.put<{ Params: { id: string }; Body: { enabled?: boolean; workerId?: string; 
   worker.buyerId = buyer.id; worker.status = "ASSIGNED"; delete worker.cooldownUntil; buyer.workerId = worker.id; buyer.planBroadcast = true;
   syncLpmTargets(store, buyer, worker, groups);
   const broadcast: Broadcast = { buyerId: buyer.id, ...content, groups, intervalMinutes: broadcastInterval(req.body.intervalMinutes), updatedBy: "ADMIN", updatedAt: now() };
-  store.broadcasts = [...store.broadcasts.filter((item) => item.buyerId !== buyer.id), broadcast]; buyer.updatedAt = now(); await save(store);
+  store.broadcasts = [...store.broadcasts.filter((item) => item.buyerId !== buyer.id), broadcast]; unlockBroadcast(buyer, "ADMIN"); buyer.updatedAt = now(); await save(store);
   return { ok: true, buyer, broadcast };
+});
+
+app.post<{ Params: { id: string } }>("/api/admin/buyers/:id/broadcast-config/edit", { preHandler: adminOnly }, async (req, reply) => {
+  const store = await load(); const buyer = store.buyers.find((item) => item.id === req.params.id);
+  if (!buyer) return reply.code(404).send({ error: "Buyer tidak ditemukan." });
+  try { broadcastLock(buyer, "ADMIN"); await save(store); return { ok: true, buyer }; }
+  catch (error) { return reply.code(409).send({ error: "setup_locked", reason: (error as Error).message }); }
+});
+app.post<{ Params: { id: string } }>("/api/admin/buyers/:id/broadcast-config/cancel", { preHandler: adminOnly }, async (req, reply) => {
+  const store = await load(); const buyer = store.buyers.find((item) => item.id === req.params.id); if (buyer) unlockBroadcast(buyer, "ADMIN"); await save(store); return { ok: true };
 });
 
 app.post<{ Params: { id: string } }>("/api/admin/buyers/:id/comment-config/edit", { preHandler: adminOnly }, async (req, reply) => {
