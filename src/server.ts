@@ -154,7 +154,13 @@ function syncLpmTargets(store: Store, buyer: Buyer, worker: Worker, groups: stri
   for (const target of current) if (!wanted.has(target.username.toLowerCase())) { target.desired = false; target.status = "REMOVING"; target.note = undefined; target.updatedAt = now(); }
   for (const username of groups) {
     const existing = store.lpmTargets.find((item) => item.buyerId === buyer.id && item.username.toLowerCase() === username.toLowerCase());
-    if (existing) { existing.desired = true; existing.workerId = worker.id; if (existing.status === "REMOVING" || existing.status === "REMOVED") { existing.status = "CONNECTING"; existing.note = undefined; } existing.updatedAt = now(); continue; }
+    if (existing) {
+      const workerChanged = existing.workerId !== worker.id;
+      existing.desired = true; existing.workerId = worker.id;
+      if (workerChanged || existing.status === "REMOVING" || existing.status === "REMOVED" || existing.status === "READY" || existing.status === "UNAVAILABLE") { existing.status = "CONNECTING"; existing.note = undefined; }
+      existing.updatedAt = now();
+      continue;
+    }
     store.lpmTargets.push({ id: id("lpm"), buyerId: buyer.id, workerId: worker.id, username, status: "CONNECTING", desired: true, createdAt: now(), updatedAt: now() });
   }
 }
