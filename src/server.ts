@@ -822,6 +822,10 @@ app.put<{ Params: { id: string }; Body: { enabled?: boolean; workerId?: string; 
     releaseWorkerWhenGroupsCleared(store, buyer); store.broadcasts = store.broadcasts.filter((item) => item.buyerId !== buyer.id);
     buyer.updatedAt = now(); await save(store); return { ok: true, buyer };
   }
+  if (!req.body.workerId) {
+    buyer.planBroadcast = true; unlockBroadcast(buyer, "ADMIN"); buyer.updatedAt = now(); await save(store);
+    return { ok: true, buyer };
+  }
   try { requireBroadcastLock(buyer, "ADMIN"); } catch (error) { return reply.code(409).send({ error: "setup_locked", reason: (error as Error).message }); }
   const worker = store.workers.find((item) => item.id === req.body.workerId);
   if (!worker || (worker.status !== "AVAILABLE" && worker.buyerId !== buyer.id)) return reply.code(409).send({ error: "Pilih akun kerja yang tersedia." });
@@ -861,10 +865,13 @@ app.put<{ Params: { id: string }; Body: { enabled?: boolean; bases?: string; div
     buyer.planComment = false; buyer.commentActive = false; store.commentConfigs = store.commentConfigs.filter((item) => item.buyerId !== buyer.id);
     buyer.updatedAt = now(); await save(store); return { ok: true, buyer };
   }
+  const bases = split(req.body.bases);
+  if (!bases.length) {
+    buyer.planComment = true; buyer.updatedAt = now(); await save(store);
+    return { ok: true, buyer };
+  }
   const current = commentConfigFor(store, buyer.id);
   try { requireCommentLock(current, "ADMIN"); } catch (error) { return reply.code(409).send({ error: "setup_locked", reason: (error as Error).message }); }
-  const bases = split(req.body.bases);
-  if (!bases.length) return reply.code(400).send({ error: "Isi setidaknya satu base tujuan." });
   let divisions: CommentDivision[]; try { divisions = cleanDivisions(req.body.divisions); } catch (error) { return reply.code(400).send({ error: (error as Error).message }); }
   buyer.planComment = true;
   current.bases = bases; current.divisions = divisions; current.mode = req.body.mode === "AUTO" ? "AUTO" : "APPROVAL"; current.updatedAt = now(); current.updatedBy = "ADMIN"; unlockComment(current, "ADMIN"); syncCommentTargets(store, buyer.id, current.bases); buyer.updatedAt = now(); await save(store);
