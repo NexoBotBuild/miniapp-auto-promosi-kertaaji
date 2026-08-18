@@ -10,7 +10,7 @@ import { loadPersistentStore, readEncryptedSessions } from "../src/database.js";
 type Job = { id: string; action: "JOIN" | "LEAVE"; username: string };
 type BroadcastJob = { buyerId: string; deliveryToken: string; group: string; wording: string; mode: "TEXT" | "FORWARD"; forward?: { channel: string; messageId: number; showSource: boolean } };
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const workerRef = String(process.argv[2] ?? "").replace(/^@/, ""); const apiId = Number(process.env.TELEGRAM_API_ID); const apiHash = process.env.TELEGRAM_API_HASH ?? ""; const sessionKey = process.env.WORKER_SESSION_KEY ?? ""; const adapterToken = process.env.LPM_ADAPTER_TOKEN ?? ""; const baseUrl = (process.env.LPM_API_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+const workerRef = String(process.argv[2] ?? "").replace(/^@/, ""); const apiId = Number(process.env.TELEGRAM_API_ID); const apiHash = process.env.TELEGRAM_API_HASH ?? ""; const sessionKey = process.env.WORKER_SESSION_KEY ?? ""; const adapterToken = process.env.LPM_ADAPTER_TOKEN ?? ""; const baseUrl = (process.env.LPM_API_URL ?? `http://127.0.0.1:${process.env.PORT ?? 8787}`).replace(/\/$/, "");
 if (!workerRef || !Number.isInteger(apiId) || !apiHash || sessionKey.length < 24 || !adapterToken) throw new Error("@username worker dan konfigurasi Telegram/LPM belum lengkap.");
 const store = await loadPersistentStore<{ workers?: { id: string; username: string }[] }>(join(root, "data/store.json"), {});
 const worker = store.workers?.find((item) => item.id === workerRef || item.username.toLowerCase() === workerRef.toLowerCase());

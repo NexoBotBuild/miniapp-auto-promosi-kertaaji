@@ -11,7 +11,7 @@ type Target = { base: string; discussion?: string; status: string; baseId?: stri
 type CommentJob = { id: string; deliveryToken: string; base: string; messageId: string; wording: string; link: string };
 type CommentDeletion = { id: string; deleteToken: string; base: string; commentMessageId: string };
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const buyerId = String(process.argv[2] ?? ""); const apiId = Number(process.env.TELEGRAM_API_ID); const apiHash = process.env.TELEGRAM_API_HASH ?? ""; const sessionKey = process.env.WORKER_SESSION_KEY ?? ""; const adapterToken = process.env.LPM_ADAPTER_TOKEN ?? ""; const baseUrl = (process.env.LPM_API_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+const buyerId = String(process.argv[2] ?? ""); const apiId = Number(process.env.TELEGRAM_API_ID); const apiHash = process.env.TELEGRAM_API_HASH ?? ""; const sessionKey = process.env.WORKER_SESSION_KEY ?? ""; const adapterToken = process.env.LPM_ADAPTER_TOKEN ?? ""; const baseUrl = (process.env.LPM_API_URL ?? `http://127.0.0.1:${process.env.PORT ?? 8787}`).replace(/\/$/, "");
 if (!buyerId || !Number.isInteger(apiId) || !apiHash || sessionKey.length < 24 || !adapterToken) throw new Error("Konfigurasi Auto Komen belum lengkap.");
 const key = createHash("sha256").update(sessionKey).digest();
 function decrypt(value: string) { const [iv, tag, content] = value.split("."); const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64url")); decipher.setAuthTag(Buffer.from(tag, "base64url")); return Buffer.concat([decipher.update(Buffer.from(content, "base64url")), decipher.final()]).toString("utf8"); }
